@@ -1,0 +1,17 @@
+[Unit]
+Description=biz-monitor Slack Socket Mode listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=koast
+Group=koast
+WorkingDirectory=/home/koast/biz-monitor
+EnvironmentFile=/home/koast/biz-monitor/.env
+ExecStart=/home/koast/biz-monitor/.venv/bin/python -m app.main run-slack
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

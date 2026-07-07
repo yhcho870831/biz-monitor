@@ -1,0 +1,38 @@
+# Secrets and local runtime configuration
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+output/
+tmp/
+backups/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Browser/runtime artifacts
+.playwright-cli/
+playwright-report/
+
+# Logs and generated reports
+*.log
+*.log.*
+outputs/
+
+# Temporary scratch files
+*.tmp
+*.bak
+*.bak.*
+tmp_*

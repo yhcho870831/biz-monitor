@@ -1,0 +1,1 @@
+"""Business notice monitor package."""

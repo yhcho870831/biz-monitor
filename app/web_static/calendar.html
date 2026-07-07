@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>참여사업 캘린더</title>
+    <link rel="stylesheet" href="/static/calendar.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1>참여사업 캘린더</h1>
+          <p>원본 공고에서 체크한 사업과 직접 등록한 사업을 내부망 달력으로 관리합니다.</p>
+        </div>
+        <div class="topbar-actions">
+          <label class="selected-by">
+            <span>선택자</span>
+            <input id="selectedBy" type="text" placeholder="이름 입력" />
+          </label>
+          <button id="manualAddButton" type="button">참여사업 직접 추가</button>
+          <button id="todayButton" type="button">오늘</button>
+          <button id="refreshButton" type="button">새로고침</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-toolbar">
+            <input id="searchInput" type="text" placeholder="검색어 필터" />
+            <label class="toggle-row">
+              <input id="selectedOnlyCheckbox" type="checkbox" />
+              <span>선택한 사업만 보기</span>
+            </label>
+          </div>
+
+          <section class="sidebar-section">
+            <h2>원본 공고</h2>
+            <div id="siteList" class="site-list"></div>
+          </section>
+
+          <section class="sidebar-section">
+            <h2>직접등록 / 과거이관 참여사업</h2>
+            <div id="savedSiteList" class="site-list"></div>
+          </section>
+        </aside>
+
+        <section class="calendar-panel">
+          <div class="calendar-toolbar">
+            <button id="prevMonthButton" type="button" class="month-nav-button">&lt; 이전달</button>
+            <strong id="currentMonthLabel"></strong>
+            <button id="nextMonthButton" type="button" class="month-nav-button">다음달 &gt;</button>
+          </div>
+          <div class="calendar-weekdays">
+            <div>일</div>
+            <div>월</div>
+            <div>화</div>
+            <div>수</div>
+            <div>목</div>
+            <div>금</div>
+            <div>토</div>
+          </div>
+          <div id="calendarGrid" class="calendar-grid"></div>
+        </section>
+
+        <aside id="detailPanel" class="detail-panel">
+          <div class="detail-empty">사업을 선택하면 상세 정보가 표시됩니다.</div>
+        </aside>
+      </main>
+    </div>
+
+    <div id="manualModal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2>참여사업 직접 추가</h2>
+          <button id="manualCloseButton" type="button" class="ghost-button">닫기</button>
+        </div>
+        <form id="manualForm" class="modal-form">
+          <label>
+            <span>사업명</span>
+            <input id="manualTitle" type="text" required />
+          </label>
+          <label>
+            <span>발주처</span>
+            <input id="manualOrganization" type="text" />
+          </label>
+          <label>
+            <span>입찰서 제출 마감일</span>
+            <input id="manualDeadline" type="datetime-local" />
+          </label>
+          <label>
+            <span>금액(원)</span>
+            <input id="manualAmountValue" type="number" min="0" step="1" placeholder="예: 120000000" />
+          </label>
+          <label>
+            <span>중요도</span>
+            <select id="manualPriorityScore">
+              <option value="3">★★★</option>
+              <option value="2">★★☆</option>
+              <option value="1">★☆☆</option>
+              <option value="0">☆☆☆</option>
+            </select>
+          </label>
+          <label>
+            <span>태그</span>
+            <select id="manualNoticeTag">
+              <option value="research_service">연구용역</option>
+              <option value="production_service">제작용역</option>
+              <option value="goods_purchase">물품구매</option>
+              <option value="general_service">일반용역</option>
+              <option value="other">기타</option>
+            </select>
+          </label>
+          <label>
+            <span>원문 링크</span>
+            <input id="manualSourceUrl" type="url" placeholder="선택 입력" />
+          </label>
+          <label>
+            <span>상태</span>
+            <select id="manualStatus">
+              <option value="participating">참여 중</option>
+              <option value="closed">종료</option>
+              <option value="inactive">비활성</option>
+            </select>
+          </label>
+          <label>
+            <span>담당자</span>
+            <input id="manualOwnerName" type="text" />
+          </label>
+          <label>
+            <span>날짜 신뢰도</span>
+            <select id="manualDeadlineConfidence">
+              <option value="exact">확정</option>
+              <option value="estimated">추정</option>
+              <option value="unknown">확인필요</option>
+            </select>
+          </label>
+          <label class="full-width">
+            <span>메모</span>
+            <textarea id="manualMemo" rows="4"></textarea>
+          </label>
+          <div id="manualMessage" class="detail-message hidden"></div>
+          <div class="modal-actions">
+            <button id="manualSubmitButton" type="submit">등록</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script src="/static/calendar.js"></script>
+  </body>
+</html>

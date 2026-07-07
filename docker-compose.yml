@@ -1,0 +1,152 @@
+services:
+  biz-monitor-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-web
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: web
+      LOG_BACKUP_DAYS: 14
+    command: ["/app/docker/run-web.sh"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+
+  biz-monitor-slack:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-slack
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: slack
+      LOG_BACKUP_DAYS: 14
+    command: ["/app/docker/run-slack.sh"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+
+  # Enqueue-only scheduler: at 09:00/15:00 (KST) it creates the day's jobs for
+  # every site and does maintenance. It never processes jobs, so a slow site or
+  # a stuck AI gateway can no longer block enqueueing.
+  biz-monitor-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-scheduler
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: scheduler
+      LOG_BACKUP_DAYS: 14
+      SCHEDULER_SITE_CODES: g2b,d2b,iris,kimst,kmiti,nia
+      SCHEDULER_STATE_KEY: enqueue
+    command: ["/app/docker/run-scheduler.sh"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+
+  # Dedicated g2b worker: g2b is the slowest site (screenshots, attachments),
+  # so it gets its own always-on worker and cannot delay the other sites.
+  biz-monitor-worker-g2b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-worker-g2b
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: worker-g2b
+      LOG_BACKUP_DAYS: 14
+      SCHEDULER_SITE_CODES: g2b
+    command: ["/app/docker/run-worker.sh"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+
+  # Dedicated d2b worker: d2b often spends longer on filtering/screenshots than
+  # the lighter sites, so it should not delay them.
+  biz-monitor-worker-d2b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-worker-d2b
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: worker-d2b
+      LOG_BACKUP_DAYS: 14
+      SCHEDULER_SITE_CODES: d2b
+    command: ["/app/docker/run-worker.sh"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+
+  # Research-heavy worker: iris and kmiti are slower public/R&D-style sources
+  # and benefit from being isolated from the lighter portal sites.
+  biz-monitor-worker-research:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-worker-research
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: worker-research
+      LOG_BACKUP_DAYS: 14
+      SCHEDULER_SITE_CODES: iris,kmiti
+    command: ["/app/docker/run-worker.sh"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+
+  # Light worker: kimst and nia can drain independently while the heavier sites
+  # continue on their own workers.
+  biz-monitor-worker-light:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-worker-light
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: worker-light
+      LOG_BACKUP_DAYS: 14
+      SCHEDULER_SITE_CODES: kimst,nia
+    command: ["/app/docker/run-worker.sh"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output

@@ -1,0 +1,41 @@
+[
+  {
+    "project_name": "기상 데이터 플랫폼 구축",
+    "organization": "기상청",
+    "category": "기상",
+    "keywords": [
+      "기상",
+      "기상정보",
+      "기상 데이터",
+      "예보",
+      "관측"
+    ],
+    "enabled": true
+  },
+  {
+    "project_name": "스마트양식 자동화 시스템",
+    "organization": "해양수산부",
+    "category": "양식",
+    "keywords": [
+      "스마트양식",
+      "양식시스템",
+      "양식장 자동화",
+      "아쿠아포닉스",
+      "RAS"
+    ],
+    "enabled": true
+  },
+  {
+    "project_name": "해양 재난 대응 정보화",
+    "organization": "한국지능정보사회진흥원",
+    "category": "해양",
+    "keywords": [
+      "해양",
+      "수산",
+      "재난",
+      "모니터링",
+      "해양기상"
+    ],
+    "enabled": true
+  }
+]
