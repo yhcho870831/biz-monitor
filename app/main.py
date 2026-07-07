@@ -32,6 +32,7 @@ from app.services.history_import import (
     write_preview_report,
 )
 from app.services.business_days import get_non_business_day_reason, is_scheduled_run_day
+from app.services.collector_health import run_collector_health_check
 from app.services.notifier import SlackNotifier
 from app.services.pipeline import run_manual_search
 from app.services.calendar import now_in_timezone
@@ -474,6 +475,22 @@ def command_run_scheduler_loop() -> None:
                 except Exception:
                     logger.exception("deferred publish failed for %s", publish_mark)
 
+        if getattr(settings, "collector_health_enabled", True):
+            health_mark = _due_scheduler_mark(
+                now,
+                settings.slack_publish_times,
+                _load_scheduler_mark("health"),
+            )
+            if health_mark:
+                logger.info("running collector health check for %s", health_mark)
+                try:
+                    run_collector_health_check(session_factory, notifier, settings)
+                    _save_scheduler_mark(health_mark, "health")
+                except Exception:
+                    logger.exception(
+                        "collector health check failed for %s", health_mark
+                    )
+
         last_mark = _load_scheduler_mark("enqueue")
         due_mark = _due_scheduler_mark(now, settings.schedule_times, last_mark)
 
@@ -525,6 +542,24 @@ def command_test_slack() -> None:
     logger.info("slack test sent ts=%s", ts)
 
 
+def command_collector_health_report(
+    window_hours: int | None = None,
+    dry_run: bool = False,
+    force: bool = False,
+) -> None:
+    settings, session_factory, notifier, _ = build_runtime()
+    summary = run_collector_health_check(
+        session_factory,
+        notifier,
+        settings,
+        window_hours=window_hours,
+        dry_run=dry_run,
+        force=force,
+    )
+    logger.info("collector-health-report summary=%s", summary)
+    print("COLLECTOR_HEALTH_SUMMARY=%s" % json.dumps(summary, ensure_ascii=False, default=str))
+
+
 def command_show_config() -> None:
     settings, _, _, _ = build_runtime()
     print("APP_ENV=%s" % settings.app_env)
@@ -543,6 +578,22 @@ def command_show_config() -> None:
         % settings.ai_relevance_prepare_minutes_before_publish
     )
     print("AI_RELEVANCE_MAX_PER_RUN=%s" % settings.ai_relevance_max_per_run)
+    print("COLLECTOR_HEALTH_ENABLED=%s" % settings.collector_health_enabled)
+    print(
+        "COLLECTOR_HEALTH_WINDOW_HOURS=%s" % settings.collector_health_window_hours
+    )
+    print(
+        "COLLECTOR_HEALTH_FAILED_THRESHOLD=%s"
+        % settings.collector_health_failed_threshold
+    )
+    print(
+        "COLLECTOR_HEALTH_EXCLUDE_SITES=%s"
+        % ",".join(settings.collector_health_exclude_sites)
+    )
+    print(
+        "COLLECTOR_HEALTH_CHANNEL_ID=%s"
+        % (settings.collector_health_channel_id or "(command channel)")
+    )
     for site_code, enabled in settings.site_enabled.items():
         print(
             "SITE_%s_ENABLED=%s keywords=%s"
@@ -697,6 +748,10 @@ def main() -> None:
     subparsers.add_parser("publish-deferred-notices")
     subparsers.add_parser("test-slack")
     subparsers.add_parser("show-config")
+    health_parser = subparsers.add_parser("collector-health-report")
+    health_parser.add_argument("--window-hours", type=int, default=0)
+    health_parser.add_argument("--dry-run", action="store_true")
+    health_parser.add_argument("--force", action="store_true")
     subparsers.add_parser("cleanup-expired-notices")
     subparsers.add_parser("backfill-saved-notice-deadlines")
     backup_db_parser = subparsers.add_parser("backup-db")
@@ -764,6 +819,12 @@ def main() -> None:
         command_test_slack()
     elif args.command == "show-config":
         command_show_config()
+    elif args.command == "collector-health-report":
+        command_collector_health_report(
+            window_hours=args.window_hours or None,
+            dry_run=args.dry_run,
+            force=args.force,
+        )
     elif args.command == "cleanup-expired-notices":
         command_cleanup_expired_notices()
     elif args.command == "backfill-saved-notice-deadlines":

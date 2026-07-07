@@ -84,6 +84,11 @@ class Settings:
     worker_heartbeat_interval_seconds: int
     runner_poll_interval_seconds: int
     playwright_headless: bool
+    collector_health_enabled: bool
+    collector_health_channel_id: str
+    collector_health_window_hours: int
+    collector_health_failed_threshold: int
+    collector_health_exclude_sites: List[str]
 
 
 def load_settings() -> Settings:
@@ -213,4 +218,19 @@ def load_settings() -> Settings:
             os.getenv("RUNNER_POLL_INTERVAL_SECONDS", "10")
         ),
         playwright_headless=_parse_bool(os.getenv("PLAYWRIGHT_HEADLESS"), True),
+        collector_health_enabled=_parse_bool(
+            os.getenv("COLLECTOR_HEALTH_ENABLED"), True
+        ),
+        collector_health_channel_id=os.getenv(
+            "COLLECTOR_HEALTH_CHANNEL_ID", ""
+        ).strip(),
+        collector_health_window_hours=int(
+            os.getenv("COLLECTOR_HEALTH_WINDOW_HOURS", "24")
+        ),
+        collector_health_failed_threshold=int(
+            os.getenv("COLLECTOR_HEALTH_FAILED_THRESHOLD", "1")
+        ),
+        collector_health_exclude_sites=_parse_csv(
+            os.getenv("COLLECTOR_HEALTH_EXCLUDE_SITES", "g2b")
+        ),
     )
