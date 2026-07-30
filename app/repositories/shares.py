@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -35,9 +36,11 @@ def backfill_share_guards_from_sqlite_backup(session: Session, backup_path: str 
     path = Path(backup_path).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError("share-guard backup does not exist: %s" % path)
+    if Path(str(path) + "-wal").exists():
+        raise ValueError("share-guard backup has a WAL sidecar and is not a stable snapshot: %s" % path)
 
     uri = "file:%s?mode=ro&immutable=1" % path.as_posix()
-    with sqlite3.connect(uri, uri=True) as backup:
+    with closing(sqlite3.connect(uri, uri=True)) as backup:
         integrity = backup.execute("PRAGMA integrity_check").fetchone()
         if not integrity or integrity[0] != "ok":
             raise ValueError("share-guard backup integrity failed: %s" % path)

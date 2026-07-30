@@ -40,7 +40,27 @@ def create_schema(engine) -> None:
     except OperationalError as exc:
         if "already exists" not in str(exc).lower():
             raise
+    _normalize_legacy_suppression_timestamps(engine)
     _upgrade_schema(engine)
+
+
+def _normalize_legacy_suppression_timestamps(engine) -> None:
+    """Make restored legacy UTC strings readable by SQLite DateTime columns."""
+    with engine.begin() as connection:
+        inspector = inspect(connection)
+        for table_name in ("slack_shares", "notice_share_guards"):
+            if not inspector.has_table(table_name):
+                continue
+            columns = {column["name"] for column in inspector.get_columns(table_name)}
+            if "suppressed_at" not in columns:
+                continue
+            connection.execute(
+                text(
+                    f"UPDATE {table_name} "
+                    "SET suppressed_at = replace(replace(suppressed_at, 'T', ' '), 'Z', '.000000') "
+                    "WHERE suppressed_at LIKE '%T%Z'"
+                )
+            )
 
 
 def _upgrade_schema(engine) -> None:

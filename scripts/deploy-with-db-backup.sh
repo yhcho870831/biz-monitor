@@ -112,7 +112,11 @@ fi
 # Recover durable re-post guards from prior consistent backups without changing
 # the live notices or shares. A corrupt old backup is logged and skipped by the
 # command rather than turning a successful deploy into a destructive rollback.
-docker compose exec -T biz-monitor-scheduler \
+if ! docker compose exec -T biz-monitor-scheduler \
   python -m app.main backfill-share-guards --backup-dir /app/data/backups
+then
+  echo "deploy completed, but share-guard backfill failed; services are running and must not be rolled back" >&2
+  exit 2
+fi
 
 echo "deploy complete; database preserved"
