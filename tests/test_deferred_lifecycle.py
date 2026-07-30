@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
 from app.models import Notice, SlackShare
+from app.repositories.notices import delete_expired_notices
 from app.services.scheduler import (
     _pending_slack_share_rows,
     publish_deferred_scheduled_notices,
@@ -82,6 +83,85 @@ class DeferredLifecycleTest(unittest.TestCase):
             saved = session.get(SlackShare, share.id)
             self.assertIsNotNone(saved.suppressed_at)
             self.assertEqual(saved.suppressed_reason, "inactive_at_deferred_publish")
+
+
+class RetentionSuppressedShareTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = create_engine("sqlite://")
+        Base.metadata.create_all(self.engine)
+        self.session_factory = sessionmaker(bind=self.engine, future=True)
+        self.now = datetime.utcnow()
+        self.long_expired_at = self.now - timedelta(days=400)
+
+    def _expired_notice_with_share(
+        self,
+        site_notice_key: str,
+        *,
+        suppressed: bool,
+    ) -> tuple[int, int]:
+        with self.session_factory() as session:
+            notice = Notice(
+                site_code="g2b",
+                site_notice_key=site_notice_key,
+                title="expired procurement plan",
+                source_url="https://example.com/plan",
+                raw_payload_json=json.dumps(
+                    {"announcement_stage": "procurement_plan", "prcsYmd": "20200101"}
+                ),
+                first_seen_at=self.long_expired_at,
+                last_seen_at=self.long_expired_at,
+                created_at=self.long_expired_at,
+                updated_at=self.long_expired_at,
+            )
+            session.add(notice)
+            session.flush()
+            share = SlackShare(
+                notice_id=notice.id,
+                channel_id="C123",
+                message_ts="" if suppressed else "1700000000.100100",
+                share_type="scheduled",
+                shared_at=self.long_expired_at,
+                suppressed_at=self.long_expired_at if suppressed else None,
+                suppressed_reason=(
+                    "g2b_procurement_plan_not_published" if suppressed else None
+                ),
+            )
+            session.add(share)
+            session.commit()
+            return notice.id, share.id
+
+    def test_retention_keeps_suppressed_share_and_its_notice(self) -> None:
+        notice_id, share_id = self._expired_notice_with_share(
+            "prespec:kept",
+            suppressed=True,
+        )
+
+        with self.session_factory() as session:
+            deleted = delete_expired_notices(session, now=self.now)
+
+        self.assertEqual(deleted, 0)
+        with self.session_factory() as session:
+            self.assertIsNotNone(session.get(Notice, notice_id))
+            saved = session.get(SlackShare, share_id)
+            self.assertIsNotNone(saved)
+            self.assertEqual(
+                saved.suppressed_reason,
+                "g2b_procurement_plan_not_published",
+            )
+
+    def test_retention_still_deletes_expired_notice_without_suppressed_share(self) -> None:
+        notice_id, share_id = self._expired_notice_with_share(
+            "prespec:removed",
+            suppressed=False,
+        )
+
+        with self.session_factory() as session:
+            deleted = delete_expired_notices(session, now=self.now)
+
+        self.assertEqual(deleted, 1)
+        with self.session_factory() as session:
+            self.assertIsNone(session.get(Notice, notice_id))
+            self.assertIsNone(session.get(SlackShare, share_id))
 
 
 if __name__ == "__main__":
