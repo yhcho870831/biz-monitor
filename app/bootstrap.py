@@ -65,6 +65,33 @@ def _upgrade_schema(engine) -> None:
                 )
             )
 
+            # Seed the durable re-post guard from the share rows that still
+            # exist. Best effort: retention has already removed the rows for
+            # notices older than the retention window, so those keys can only be
+            # recovered from a backup. Re-running is safe.
+            if inspector.has_table("notice_share_guards"):
+                connection.execute(
+                    text(
+                        """
+                        INSERT OR IGNORE INTO notice_share_guards
+                            (site_code, site_notice_key, channel_id,
+                             first_shared_at, last_message_ts,
+                             suppressed_at, suppressed_reason, updated_at)
+                        SELECT n.site_code,
+                               n.site_notice_key,
+                               s.channel_id,
+                               min(s.shared_at),
+                               max(s.message_ts),
+                               max(s.suppressed_at),
+                               max(s.suppressed_reason),
+                               CURRENT_TIMESTAMP
+                        FROM slack_shares s
+                        JOIN notices n ON n.id = s.notice_id
+                        GROUP BY n.site_code, n.site_notice_key, s.channel_id
+                        """
+                    )
+                )
+
         if not inspector.has_table("notice_attachments"):
             connection.execute(
                 text(

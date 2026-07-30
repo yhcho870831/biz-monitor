@@ -156,6 +156,37 @@ class SlackShare(Base):
     suppressed_reason = Column(String(255), nullable=True)
 
 
+class NoticeShareGuard(Base):
+    """Durable re-post guard keyed on the source notice identity.
+
+    ``slack_shares`` rows are deleted together with their notice by retention
+    cleanup, so they cannot answer "was this ever shared?" for a notice that
+    aged out and then reappeared in a later collection. This table is keyed on
+    ``(site_code, site_notice_key)`` instead of ``notice_id`` and is never
+    subject to retention, so the answer survives the notice row.
+    """
+
+    __tablename__ = "notice_share_guards"
+    __table_args__ = (
+        UniqueConstraint(
+            "site_code",
+            "site_notice_key",
+            "channel_id",
+            name="uq_notice_share_guard",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    site_code = Column(String(50), nullable=False)
+    site_notice_key = Column(String(255), nullable=False)
+    channel_id = Column(String(255), nullable=False)
+    first_shared_at = Column(DateTime, nullable=False)
+    last_message_ts = Column(String(255), nullable=True)
+    suppressed_at = Column(DateTime, nullable=True)
+    suppressed_reason = Column(String(255), nullable=True)
+    updated_at = Column(DateTime, nullable=False)
+
+
 class SlackFileShare(Base):
     __tablename__ = "slack_file_shares"
     __table_args__ = (
