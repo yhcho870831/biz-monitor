@@ -99,7 +99,7 @@ post_tables="${post_metric%% *}"
 post_notices="${post_metric##* }"
 echo "postdeploy database metric tables=$post_tables notices=$post_notices"
 
-if (( post_tables < pre_tables || post_notices < pre_notices )); then
+if (( post_tables < pre_tables )); then
   echo "postdeploy database looks regressed; restoring $BACKUP_PATH" >&2
   docker compose stop "${SERVICES[@]}" || true
   restore_backup
@@ -107,5 +107,12 @@ if (( post_tables < pre_tables || post_notices < pre_notices )); then
   echo "restored database from $BACKUP_PATH"
   exit 1
 fi
+
+# Notice counts can legitimately decrease when retention runs during deploy.
+# Recover durable re-post guards from prior consistent backups without changing
+# the live notices or shares. A corrupt old backup is logged and skipped by the
+# command rather than turning a successful deploy into a destructive rollback.
+docker compose exec -T biz-monitor-scheduler \
+  python -m app.main backfill-share-guards --backup-dir /app/data/backups
 
 echo "deploy complete; database preserved"

@@ -1,11 +1,128 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Notice, NoticeShareGuard, SlackFileShare, SlackShare
+
+
+def _sqlite_datetime(value: object, fallback: datetime) -> datetime:
+    """Convert a SQLite timestamp from a historical backup to a naive datetime."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    raw = str(value or "").strip()
+    if not raw:
+        return fallback
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return fallback
+    return parsed.replace(tzinfo=None)
+
+
+def backfill_share_guards_from_sqlite_backup(session: Session, backup_path: str | Path) -> int:
+    """Create missing durable guards from a read-only SQLite backup.
+
+    Retention may have deleted both a live notice and its ``slack_shares`` row
+    before the guard table was introduced.  The live-schema migration cannot
+    recover those identities, but a consistent SQLite backup can.  Existing
+    guards always win, so the import is safe to repeat for every backup.
+    """
+    path = Path(backup_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError("share-guard backup does not exist: %s" % path)
+
+    uri = "file:%s?mode=ro&immutable=1" % path.as_posix()
+    with sqlite3.connect(uri, uri=True) as backup:
+        integrity = backup.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            raise ValueError("share-guard backup integrity failed: %s" % path)
+
+        tables = {
+            row[0]
+            for row in backup.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if not {"notices", "slack_shares"}.issubset(tables):
+            return 0
+
+        share_columns = {
+            row[1] for row in backup.execute("PRAGMA table_info(slack_shares)")
+        }
+        required_columns = {"notice_id", "channel_id", "shared_at"}
+        if not required_columns.issubset(share_columns):
+            return 0
+
+        message_ts = "max(s.message_ts)" if "message_ts" in share_columns else "NULL"
+        suppressed_at = (
+            "max(s.suppressed_at)" if "suppressed_at" in share_columns else "NULL"
+        )
+        suppressed_reason = (
+            "max(s.suppressed_reason)" if "suppressed_reason" in share_columns else "NULL"
+        )
+        rows = backup.execute(
+            """
+            SELECT n.site_code,
+                   n.site_notice_key,
+                   s.channel_id,
+                   min(s.shared_at) AS first_shared_at,
+                   %s AS last_message_ts,
+                   %s AS suppressed_at,
+                   %s AS suppressed_reason
+              FROM slack_shares s
+              JOIN notices n ON n.id = s.notice_id
+             WHERE n.site_code IS NOT NULL
+               AND n.site_notice_key IS NOT NULL
+               AND s.channel_id IS NOT NULL
+             GROUP BY n.site_code, n.site_notice_key, s.channel_id
+            """
+            % (message_ts, suppressed_at, suppressed_reason)
+        ).fetchall()
+
+    now = datetime.utcnow()
+    created = 0
+    for (
+        site_code,
+        site_notice_key,
+        channel_id,
+        first_shared_at,
+        last_message_ts,
+        suppressed_at,
+        suppressed_reason,
+    ) in rows:
+        exists = session.execute(
+            select(NoticeShareGuard.id).where(
+                NoticeShareGuard.site_code == site_code,
+                NoticeShareGuard.site_notice_key == site_notice_key,
+                NoticeShareGuard.channel_id == channel_id,
+            )
+        ).first()
+        if exists is not None:
+            continue
+        session.add(
+            NoticeShareGuard(
+                site_code=site_code,
+                site_notice_key=site_notice_key,
+                channel_id=channel_id,
+                first_shared_at=_sqlite_datetime(first_shared_at, now),
+                last_message_ts=str(last_message_ts or "").strip() or None,
+                suppressed_at=(
+                    _sqlite_datetime(suppressed_at, now)
+                    if suppressed_at is not None
+                    else None
+                ),
+                suppressed_reason=str(suppressed_reason or "").strip() or None,
+                updated_at=now,
+            )
+        )
+        created += 1
+    session.flush()
+    return created
 
 
 def _guard_identity(session: Session, notice_id: int) -> tuple[str, str] | None:

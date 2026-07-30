@@ -87,17 +87,6 @@ def delete_expired_notices(
         .scalars()
         .all()
     )
-    # A suppressed share is both the audit record and the re-post guard for a
-    # notice that was queued but never published. slack_shares.notice_id cascades
-    # on delete, so the notice has to survive for that row to survive.
-    protected_notice_ids.update(
-        session.execute(
-            select(SlackShare.notice_id).where(SlackShare.suppressed_at.is_not(None))
-        )
-        .scalars()
-        .all()
-    )
-
     candidate_notices = list(
         session.execute(
             select(Notice).where(

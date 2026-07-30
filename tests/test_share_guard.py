@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 from datetime import datetime, timedelta
 
@@ -10,7 +12,12 @@ from sqlalchemy.orm import sessionmaker
 from app.db import Base
 from app.models import Notice, NoticeShareGuard, SlackShare
 from app.repositories.notices import delete_expired_notices
-from app.repositories.shares import already_shared, record_share, suppress_share
+from app.repositories.shares import (
+    already_shared,
+    backfill_share_guards_from_sqlite_backup,
+    record_share,
+    suppress_share,
+)
 
 CHANNEL = "C123"
 MESSAGE_TS = "1700000000.100100"
@@ -106,6 +113,52 @@ class ShareGuardTest(unittest.TestCase):
 
             self.assertTrue(already_shared(session, notice.id, CHANNEL))
             self.assertFalse(already_shared(session, notice.id, "C999"))
+
+    def test_backup_backfill_blocks_a_notice_deleted_before_guard_migration(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            backup_path = Path(temp_dir) / "pre-guard.db"
+            backup_engine = create_engine("sqlite:///%s" % backup_path)
+            Base.metadata.create_all(backup_engine)
+            backup_session_factory = sessionmaker(bind=backup_engine, future=True)
+            historical_time = self.now - timedelta(days=400)
+            with backup_session_factory() as backup_session:
+                historical_notice = Notice(
+                    site_code="g2b",
+                    site_notice_key="legacy-reappearing-notice",
+                    title="historical notice",
+                    source_url="https://example.com/historical",
+                    first_seen_at=historical_time,
+                    last_seen_at=historical_time,
+                    created_at=historical_time,
+                    updated_at=historical_time,
+                )
+                backup_session.add(historical_notice)
+                backup_session.flush()
+                backup_session.add(
+                    SlackShare(
+                        notice_id=historical_notice.id,
+                        channel_id=CHANNEL,
+                        message_ts=MESSAGE_TS,
+                        share_type="scheduled",
+                        shared_at=historical_time,
+                    )
+                )
+                backup_session.commit()
+            backup_engine.dispose()
+
+            with self.session_factory() as session:
+                self.assertEqual(
+                    backfill_share_guards_from_sqlite_backup(session, backup_path), 1
+                )
+                session.commit()
+                recollected = self._add_notice(
+                    session,
+                    "legacy-reappearing-notice",
+                    seen_at=self.now,
+                )
+                session.commit()
+
+                self.assertTrue(already_shared(session, recollected.id, CHANNEL))
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ from app.db import create_db_engine, create_session_factory, ensure_sqlite_paren
 from app.logging_config import configure_logging
 from app.repositories.notices import delete_expired_notices
 from app.repositories.projects import replace_projects
+from app.repositories.shares import backfill_share_guards_from_sqlite_backup
 from app.services.history_import import (
     apply_history_site_search_import,
     apply_history_import,
@@ -117,6 +118,38 @@ def command_backup_db(output: str = "") -> None:
     _check_sqlite_integrity(backup_path)
     logger.info("database backup created path=%s", backup_path)
     print(str(backup_path))
+
+
+def command_backfill_share_guards(backup_dir: str = "") -> None:
+    """Recover durable share guards from historical, read-only SQLite backups."""
+    settings, session_factory, _notifier, _registry = build_runtime()
+    database_path = _sqlite_path_from_database_url(settings.database_url).resolve()
+    source_dir = (
+        Path(backup_dir).expanduser()
+        if backup_dir
+        else database_path.parent / "backups"
+    )
+    if not source_dir.is_dir():
+        raise FileNotFoundError("backup directory not found: %s" % source_dir)
+
+    created = 0
+    scanned = 0
+    skipped: list[str] = []
+    for backup_path in sorted(source_dir.glob("*.db")):
+        if backup_path.resolve() == database_path:
+            continue
+        scanned += 1
+        try:
+            with session_factory() as session:
+                created += backfill_share_guards_from_sqlite_backup(session, backup_path)
+                session.commit()
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            skipped.append("%s: %s" % (backup_path.name, exc))
+            logger.warning("share-guard backup skipped path=%s error=%s", backup_path, exc)
+
+    result = {"scanned": scanned, "created": created, "skipped": skipped}
+    logger.info("share-guard backup backfill completed result=%s", result)
+    print(json.dumps(result, ensure_ascii=False))
 
 
 def command_restore_db(input_file: str) -> None:
@@ -756,6 +789,8 @@ def main() -> None:
     subparsers.add_parser("backfill-saved-notice-deadlines")
     backup_db_parser = subparsers.add_parser("backup-db")
     backup_db_parser.add_argument("--output", default="")
+    share_guard_backfill_parser = subparsers.add_parser("backfill-share-guards")
+    share_guard_backfill_parser.add_argument("--backup-dir", default="")
     restore_db_parser = subparsers.add_parser("restore-db")
     restore_db_parser.add_argument("--file", required=True)
     web_parser = subparsers.add_parser("run-web")
@@ -831,6 +866,8 @@ def main() -> None:
         command_backfill_saved_notice_deadlines()
     elif args.command == "backup-db":
         command_backup_db(args.output)
+    elif args.command == "backfill-share-guards":
+        command_backfill_share_guards(args.backup_dir)
     elif args.command == "restore-db":
         command_restore_db(args.file)
     elif args.command == "run-web":

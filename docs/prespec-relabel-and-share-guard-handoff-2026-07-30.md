@@ -2,7 +2,7 @@
 title: 사전규격 라벨 정정 및 재게시 방지 작업 인수인계
 created: 2026-07-30
 updated: 2026-07-30
-status: complete
+status: ready_for_deploy
 tags:
   - biz-monitor
   - handoff
@@ -20,6 +20,10 @@ aliases:
 > [!important]
 > 2026-07-30 오전에 운영 서버(`192.168.3.60`, `/home/koast/biz-monitor`)에 배포된 세 건의 변경에 대한 기록입니다.
 > 문제가 생겼을 때 무엇을 되돌려야 하는지는 [[#롤백 절차]]와 [[#증상별 대처]]를 보세요.
+>
+> [!warning]
+> 이 문서의 후속 안전 보완(백업 기반 guard backfill, retention 보존 범위 축소, 배포 검증 수정)은
+> 현재 로컬 워크트리에만 적용되어 있습니다. 운영 반영 전까지 상태는 `ready_for_deploy`입니다.
 
 ## 목차
 
@@ -114,19 +118,15 @@ flowchart TD
 
 ### 조치
 
-`app/repositories/notices.py`에서 제외 공유가 달린 공고를 삭제 보호 대상에 추가했습니다.
+처음에는 제외 공유가 달린 공고를 삭제 보호 대상으로 두었습니다. 하지만 이제는
+`notice_share_guards`가 제외 시각과 사유를 독립적으로 보존하므로 공고·첨부·스크린샷을 무기한
+보관할 필요가 없습니다. retention은 일반 공고와 동일하게 원본 `Notice` 및 `SlackShare`를 지우고,
+guard만 남깁니다.
 
 ```python
-# A suppressed share is both the audit record and the re-post guard for a
-# notice that was queued but never published. slack_shares.notice_id cascades
-# on delete, so the notice has to survive for that row to survive.
-protected_notice_ids.update(
-    session.execute(
-        select(SlackShare.notice_id).where(SlackShare.suppressed_at.is_not(None))
-    )
-    .scalars()
-    .all()
-)
+# suppress_share() copies suppressed_at / suppressed_reason to the durable
+# guard. Retention can delete the source notice and SlackShare without losing
+# either the audit decision or the re-post guard.
 ```
 
 ### 확인 방법
@@ -136,10 +136,10 @@ ssh koast@192.168.3.60
 cd /home/koast/biz-monitor
 docker compose exec -T biz-monitor-scheduler python -c \
   "import sqlite3; c=sqlite3.connect('file:/app/data/app.db?mode=ro',uri=True); \
-   print(c.execute('select count(*) from slack_shares where suppressed_at is not null').fetchone()[0])"
+   print(c.execute('select count(*) from notice_share_guards where suppressed_at is not null').fetchone()[0])"
 ```
 
-정리 사이클 이후에도 이 값이 줄지 않아야 합니다.
+정리 사이클 이후에는 `slack_shares` 행은 줄어도 guard의 제외 이력은 남아야 합니다.
 
 ## 변경 2 · 재게시 방지 guard 테이블
 
@@ -169,8 +169,15 @@ docker compose exec -T biz-monitor-scheduler python -c \
 - `record_share()`, `suppress_share()`가 guard를 함께 갱신합니다.
 - `already_shared()`가 `slack_shares` → guard 순으로 조회합니다.
 - **retention은 이 테이블을 건드리지 않습니다.**
-- 기존 이력은 `app/bootstrap.py`의 `_upgrade_schema()`에서 `INSERT OR IGNORE`로 백필합니다. 매 기동마다
-  실행되지만 멱등이라 안전하고, 누락분을 스스로 복구합니다.
+- 현재 DB에 남아 있는 이력은 `app/bootstrap.py`의 `_upgrade_schema()`에서 `INSERT OR IGNORE`로 백필합니다.
+- retention 전에 이미 삭제된 과거 이력은 라이브 DB만으로 복구할 수 없습니다. 새
+  `backfill-share-guards` 명령이 일관된 SQLite 백업을 읽어 guard를 멱등으로 보충합니다. 배포 스크립트가
+  이를 자동 실행하며, 필요하면 수동으로도 실행할 수 있습니다.
+
+```bash
+docker compose exec -T biz-monitor-scheduler \
+  python -m app.main backfill-share-guards --backup-dir /app/data/backups
+```
 
 > [!note]
 > 호출부 시그니처를 바꾸지 않았기 때문에 `scheduler.py`와 `pipeline.py`는 수정하지 않았습니다.
@@ -325,7 +332,8 @@ docker compose exec -T biz-monitor-scheduler python -m unittest \
 | 작업 전 | 28 tests OK |
 | 변경 1 이후 | 30 tests OK |
 | 변경 2 이후 | 35 tests OK |
-| 변경 3 이후 (현재) | **39 tests OK** |
+| 변경 3 이후 | **39 tests OK** |
+| 후속 안전 보완 이후 (현재) | **40 tests OK** |
 
 ### 운영 DB 복사본 대상 리허설
 
@@ -333,7 +341,7 @@ docker compose exec -T biz-monitor-scheduler python -m unittest \
 
 | 검증 | 결과 |
 | --- | --- |
-| 변경 1: 정리 실행 후 제외 유지 | 삭제 대상 387 → 366건, 제외 **37 → 37 유지** |
+| 변경 1: 정리 실행 후 제외 감사 보존 | 원본 notice/share는 삭제되고 guard의 `suppressed_at`·사유는 유지 |
 | 변경 2: 백필 | slack_shares 419건 → guard 419건 (제외 37건 포함) |
 | 변경 2: 정리 후 guard 생존 | shares 419 → 193, **guard 419 유지** |
 | 변경 2: 재수집 차단 | 삭제된 `g2b / prespec:1001478`을 다시 넣어도 `already_shared`가 차단 |
@@ -460,17 +468,15 @@ docker compose logs --since 2h biz-monitor-worker-g2b | grep -i "pre-specificati
 
 ### 배포 스크립트가 갑자기 DB를 복구해버렸다
 
-`scripts/deploy-with-db-backup.sh`에 오탐 경로가 남아 있습니다.
+기존 `scripts/deploy-with-db-backup.sh`에는 공고 수 감소를 DB 손상으로 오판하는 경로가 있었습니다.
 
 ```bash
-if (( post_tables < pre_tables || post_notices < pre_notices )); then
+if (( post_tables < pre_tables )); then
 ```
 
-`notices` 건수는 retention 때문에 정상적으로 줄어듭니다. 빌드와 재기동 사이에 수집 사이클(08:30 / 15:30)이
-끼면 이 조건이 참이 되어 **배포 전 DB를 덮어쓰고 `-wal`까지 지웁니다.**
-
-> [!warning]
-> 수집 시각 앞뒤 10분에는 배포하지 마세요. 이 조건 제거는 [[#남은 작업]] Phase 2입니다.
+`notices` 건수는 retention 때문에 정상적으로 줄어듭니다. 이제 배포 스크립트는 테이블 수 감소만
+rollback 조건으로 사용하고, notice 수 감소는 허용합니다. 배포 후에는 `/app/data/backups`를 스캔해
+삭제된 과거 이력의 guard를 보충합니다.
 
 ### 제외 건수가 갑자기 줄었다
 
@@ -479,7 +485,7 @@ if (( post_tables < pre_tables || post_notices < pre_notices )); then
 ```bash
 docker compose exec -T biz-monitor-scheduler python -c \
   "import sqlite3; c=sqlite3.connect('file:/app/data/app.db?mode=ro',uri=True); \
-   print(c.execute('select suppressed_reason, count(*) from slack_shares \
+   print(c.execute('select suppressed_reason, count(*) from notice_share_guards \
    where suppressed_at is not null group by 1').fetchall())"
 ```
 
@@ -511,7 +517,7 @@ c = sqlite3.connect('file:/app/data/app.db?mode=ro', uri=True)
 print('notices   :', c.execute('select count(*) from notices').fetchone()[0])
 print('shares    :', c.execute('select count(*) from slack_shares').fetchone()[0])
 print('guards    :', c.execute('select count(*) from notice_share_guards').fetchone()[0])
-print('suppressed:', c.execute('select count(*) from slack_shares where suppressed_at is not null').fetchone()[0])
+print('suppressed guards:', c.execute('select count(*) from notice_share_guards where suppressed_at is not null').fetchone()[0])
 print('stages    :', c.execute(\"select json_extract(raw_payload_json,'\$.announcement_stage'), count(*) \
   from notices where site_code='g2b' group by 1\").fetchall())
 "
@@ -526,7 +532,7 @@ print('stages    :', c.execute(\"select json_extract(raw_payload_json,'\$.announ
 
 | Phase | 내용 | 우선순위 |
 | --- | --- | --- |
-| 2 | `post_notices < pre_notices` 오탐 롤백 제거, 마이그레이션 완료 후 검사, 배포 후 자동 백업 | 높음 |
+| 2 | 마이그레이션 완료 후 검사, 배포 후 백업·guard backfill 결과 관측 | 높음 |
 | 4 | `oderPlanPgstNm` 부재 경보, `prcsYmd` 없는 행 규칙, `extract_datetimes` 중복 제거, `bootstrap` 조기 return, 컨테이너 TZ 명시 | 중간 |
 | — | 가이드 문서(`AI_검토_가이드.md`) 3·5·6장을 사전규격 기준으로 갱신 | 중간 |
 | — | AI 추천에서 사전규격을 계속 제외할지 재검토 (의견등록이라는 실행 가능한 액션이 있음) | 중간 |
@@ -598,7 +604,7 @@ docker compose run --rm --no-deps biz-monitor-scheduler python -m unittest <모�
 
 ```powershell
 cd "c:\Users\87yon\OneDrive\문서\공고 검색\biz-monitor-impl"
-git stash          # 로컬 수정분 보존
+git stash push -u -m "before-sync-2026-07-30"  # 추적·미추적 로컬 수정분 모두 보존
 git pull --ff-only origin main
 ```
 

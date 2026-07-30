@@ -10,7 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db import Base
-from app.models import Notice, SlackShare
+from app.models import Notice, NoticeShareGuard, SlackShare
 from app.repositories.notices import delete_expired_notices
 from app.services.scheduler import (
     _pending_slack_share_rows,
@@ -130,20 +130,33 @@ class RetentionSuppressedShareTest(unittest.TestCase):
             session.commit()
             return notice.id, share.id
 
-    def test_retention_keeps_suppressed_share_and_its_notice(self) -> None:
+    def test_retention_deletes_suppressed_notice_after_guard_audits_it(self) -> None:
         notice_id, share_id = self._expired_notice_with_share(
             "prespec:kept",
             suppressed=True,
         )
+        with self.session_factory() as session:
+            session.add(
+                NoticeShareGuard(
+                    site_code="g2b",
+                    site_notice_key="prespec:kept",
+                    channel_id="C123",
+                    first_shared_at=self.long_expired_at,
+                    suppressed_at=self.long_expired_at,
+                    suppressed_reason="g2b_procurement_plan_not_published",
+                    updated_at=self.long_expired_at,
+                )
+            )
+            session.commit()
 
         with self.session_factory() as session:
             deleted = delete_expired_notices(session, now=self.now)
 
-        self.assertEqual(deleted, 0)
+        self.assertEqual(deleted, 1)
         with self.session_factory() as session:
-            self.assertIsNotNone(session.get(Notice, notice_id))
-            saved = session.get(SlackShare, share_id)
-            self.assertIsNotNone(saved)
+            self.assertIsNone(session.get(Notice, notice_id))
+            self.assertIsNone(session.get(SlackShare, share_id))
+            saved = session.query(NoticeShareGuard).one()
             self.assertEqual(
                 saved.suppressed_reason,
                 "g2b_procurement_plan_not_published",
