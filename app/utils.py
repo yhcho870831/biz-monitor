@@ -92,11 +92,15 @@ def extract_datetimes(value: str) -> List[datetime]:
     patterns = [
         r"(\d{4}[./-]\d{2}[./-]\d{2}\s+\d{2}:\d{2})",
         r"(\d{4}[./-]\d{2}[./-]\d{2})",
+        r"(?<!\d)(\d{4}\d{2}\d{2})(?!\d)",
     ]
     for pattern in patterns:
         for raw in re.findall(pattern, text):
             normalized = raw.replace(".", "-").replace("/", "-")
-            fmt = "%Y-%m-%d %H:%M" if ":" in normalized else "%Y-%m-%d"
+            if re.fullmatch(r"\d{8}", normalized):
+                fmt = "%Y%m%d"
+            else:
+                fmt = "%Y-%m-%d %H:%M" if ":" in normalized else "%Y-%m-%d"
             try:
                 matches.append(datetime.strptime(normalized, fmt))
             except ValueError:
