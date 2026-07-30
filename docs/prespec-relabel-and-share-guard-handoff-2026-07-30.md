@@ -2,7 +2,7 @@
 title: 사전규격 라벨 정정 및 재게시 방지 작업 인수인계
 created: 2026-07-30
 updated: 2026-07-30
-status: ready_for_deploy
+status: deployed
 tags:
   - biz-monitor
   - handoff
@@ -22,8 +22,8 @@ aliases:
 > 문제가 생겼을 때 무엇을 되돌려야 하는지는 [[#롤백 절차]]와 [[#증상별 대처]]를 보세요.
 >
 > [!warning]
-> 이 문서의 후속 안전 보완(백업 기반 guard backfill, retention 보존 범위 축소, 배포 검증 수정)은
-> 현재 로컬 워크트리에만 적용되어 있습니다. 운영 반영 전까지 상태는 `ready_for_deploy`입니다.
+> 후속 안전 보완(백업 기반 guard backfill, retention 보존 범위 축소, 배포 검증 수정)은
+> 2026-07-30에 운영 서버에 반영됐습니다 (`5e4c302`).
 
 ## 목차
 
