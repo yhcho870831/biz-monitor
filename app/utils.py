@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, List, Optional
 
 
@@ -81,6 +81,15 @@ def normalize_text(value: str) -> str:
     value = repair_mojibake(value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
+
+
+def now_kst() -> datetime:
+    """Return naive Korea Standard Time for source-site timestamps.
+
+    Collectors store Korean dates without timezone data. Korea has no daylight
+    saving time, so UTC+9 is intentional and does not depend on zoneinfo/tzdata.
+    """
+    return datetime.utcnow() + timedelta(hours=9)
 
 
 def extract_datetimes(value: str) -> List[datetime]:

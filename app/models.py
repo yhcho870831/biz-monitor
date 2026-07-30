@@ -151,6 +151,9 @@ class SlackShare(Base):
     share_type = Column(String(50), nullable=False)
     job_id = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
     shared_at = Column(DateTime, nullable=False)
+    # Retain ineligible queued shares for audit/deduplication without publishing.
+    suppressed_at = Column(DateTime, nullable=True)
+    suppressed_reason = Column(String(255), nullable=True)
 
 
 class SlackFileShare(Base):

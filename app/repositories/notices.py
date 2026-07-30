@@ -18,6 +18,7 @@ from app.utils import dumps_payload, parse_datetime
 
 
 PRE_ANNOUNCEMENT_STAGE = "pre_announcement"
+PROCUREMENT_PLAN_STAGE = "procurement_plan"
 DEFAULT_NOTICE_RETENTION_DAYS = 30
 G2B_MAIN_NOTICE_RETENTION_DAYS = 30
 
@@ -156,7 +157,10 @@ def _should_delete_notice(notice: Notice, reference_time: datetime, retention_da
     raw_payload = _notice_raw_payload(notice)
     cutoff = reference_time - timedelta(days=retention_days)
 
-    if notice.site_code == "g2b" and raw_payload.get("announcement_stage") != PRE_ANNOUNCEMENT_STAGE:
+    if notice.site_code == "g2b" and raw_payload.get("announcement_stage") not in {
+        PRE_ANNOUNCEMENT_STAGE,
+        PROCUREMENT_PLAN_STAGE,
+    }:
         posted_at = (
             notice.start_at
             or _raw_payload_posted_at(raw_payload, notice.site_code)
@@ -173,7 +177,10 @@ def _should_delete_notice(notice: Notice, reference_time: datetime, retention_da
     if posted_at is not None:
         max_age_days = (
             G2B_MAIN_NOTICE_RETENTION_DAYS
-            if notice.site_code == "g2b" and raw_payload.get("announcement_stage") != PRE_ANNOUNCEMENT_STAGE
+            if notice.site_code == "g2b" and raw_payload.get("announcement_stage") not in {
+                PRE_ANNOUNCEMENT_STAGE,
+                PROCUREMENT_PLAN_STAGE,
+            }
             else retention_days
         )
         return posted_at < (reference_time - timedelta(days=max_age_days))

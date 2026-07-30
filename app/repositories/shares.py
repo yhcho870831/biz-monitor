@@ -52,6 +52,21 @@ def record_share(
         session.commit()
 
 
+def suppress_share(
+    session: Session,
+    share: SlackShare,
+    reason: str,
+    commit: bool = True,
+) -> None:
+    """Keep an ineligible queued share out of publication without deleting it."""
+    if share.suppressed_at is None:
+        share.suppressed_at = datetime.utcnow()
+        share.suppressed_reason = reason[:255]
+        session.flush()
+    if commit:
+        session.commit()
+
+
 def record_file_share(
     session: Session,
     notice_id: int,

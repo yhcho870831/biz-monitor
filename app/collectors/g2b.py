@@ -15,7 +15,7 @@ from app.utils import extract_datetimes, make_period_text, normalize_text
 
 
 XML_NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-PRE_ANNOUNCEMENT_STAGE = "pre_announcement"
+PROCUREMENT_PLAN_STAGE = "procurement_plan"
 PRE_ANNOUNCEMENT_PAGE_SIZE = 100
 G2B_ACTION_TIMEOUT_MS = 45000
 G2B_DOWNLOAD_TIMEOUT_MS = 20000
@@ -104,7 +104,9 @@ class G2BCollector(BaseCollector):
             posted_at = dates[0] if dates else None
             amount_value = self._coerce_amount_value(payload.get("bgtSumAmt"))
 
-            payload["announcement_stage"] = PRE_ANNOUNCEMENT_STAGE
+            # This route is an order/procurement-plan list, not the separate
+            # G2B pre-specification service. Keep the legacy key for dedupe.
+            payload["announcement_stage"] = PROCUREMENT_PLAN_STAGE
             if amount_value is not None:
                 payload["amount_value"] = amount_value
                 payload["amount_text"] = f"{amount_value:,}원"

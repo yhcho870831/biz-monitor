@@ -27,6 +27,7 @@ from app.services.notifier import (
 from app.services.recruitment_filter import is_recruitment_notice
 from app.services.relevance import is_relevant
 from app.services.summaries import format_summary_lines, generate_notice_summary, get_notice_summary_payload
+from app.utils import now_kst
 from app.services.ai_relevance import (
     ai_relevance_enabled,
     evaluate_notice_relevance,
@@ -87,7 +88,7 @@ def run_manual_search(
         if scope_reason:
             logger.info("scope filtered site=%s title=%s keyword=%s", site_code, candidate.title, scope_reason)
             continue
-        if not is_active_notice(candidate, datetime.utcnow()):
+        if not is_active_notice(candidate, now_kst()):
             logger.info("deadline filtered site=%s title=%s", site_code, candidate.title)
             continue
         enrich_notice_candidate(session, candidate)

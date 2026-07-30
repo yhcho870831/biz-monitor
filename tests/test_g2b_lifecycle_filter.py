@@ -44,6 +44,17 @@ class G2BLifecycleFilterTest(unittest.TestCase):
         )
         self.assertTrue(is_active_notice(candidate, datetime(2026, 7, 30)))
 
+    def test_current_procurement_plan_is_kept(self) -> None:
+        candidate = self._g2b(
+            period_text="20260729",
+            raw_payload={
+                "announcement_stage": "procurement_plan",
+                "oderPlanPgstNm": "\uac8c\uc2dc\uc911",
+                "prcsYmd": "20260729",
+            },
+        )
+        self.assertTrue(is_active_notice(candidate, datetime(2026, 7, 30)))
+
     def test_stale_pre_announcement_is_filtered_even_when_still_marked_open(self) -> None:
         candidate = self._g2b(
             period_text="20260115",

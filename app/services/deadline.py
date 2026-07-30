@@ -11,6 +11,7 @@ from app.utils import extract_datetimes, normalize_text, parse_datetime
 NO_DEADLINE_MAX_AGE_DAYS = 30
 PRE_ANNOUNCEMENT_MAX_AGE_DAYS = 30
 G2B_ACTIVE_PRE_ANNOUNCEMENT_STATUSES = {"\uac8c\uc2dc\uc911"}
+G2B_PROCUREMENT_PLAN_STAGES = {"pre_announcement", "procurement_plan"}
 
 
 def _is_active_iris_schedule(candidate: NoticeCandidate, now: datetime) -> bool:
@@ -64,14 +65,14 @@ def _is_stale_notice_without_deadline(candidate: NoticeCandidate, now: datetime)
     raw_payload = candidate.raw_payload or {}
     max_age_days = (
         PRE_ANNOUNCEMENT_MAX_AGE_DAYS
-        if raw_payload.get("announcement_stage") == "pre_announcement"
+        if raw_payload.get("announcement_stage") in G2B_PROCUREMENT_PLAN_STAGES
         else NO_DEADLINE_MAX_AGE_DAYS
     )
     return posted_at < (now - timedelta(days=max_age_days))
 
 
-def _is_active_g2b_pre_announcement(candidate: NoticeCandidate, now: datetime) -> bool:
-    """Only keep currently published G2B pre-announcements for monitoring."""
+def _is_active_g2b_procurement_plan(candidate: NoticeCandidate, now: datetime) -> bool:
+    """Only keep currently published G2B procurement plans for monitoring."""
     raw_payload = candidate.raw_payload or {}
     status = normalize_text(str(raw_payload.get("oderPlanPgstNm") or ""))
     if status not in G2B_ACTIVE_PRE_ANNOUNCEMENT_STATUSES:
@@ -84,8 +85,8 @@ def is_active_notice(candidate: NoticeCandidate, now: datetime) -> bool:
         return False
     if candidate.site_code == "g2b":
         raw_payload = candidate.raw_payload or {}
-        if raw_payload.get("announcement_stage") == "pre_announcement":
-            return _is_active_g2b_pre_announcement(candidate, now)
+        if raw_payload.get("announcement_stage") in G2B_PROCUREMENT_PLAN_STAGES:
+            return _is_active_g2b_procurement_plan(candidate, now)
         # A bid notice without a submission deadline cannot be acted on safely.
         return candidate.deadline_at is not None
     if candidate.site_code == "iris":

@@ -80,7 +80,7 @@ class FormatNotifierTest(unittest.TestCase):
 
         self.assertIn("<https://intranet/download/1|", messages[0])
 
-    def test_format_site_notice_tables_omits_g2b_source_link_without_attachment(self) -> None:
+    def test_format_site_notice_tables_keeps_g2b_detail_link_without_attachment(self) -> None:
         messages = format_site_notice_tables(
             "g2b",
             [
@@ -97,7 +97,48 @@ class FormatNotifierTest(unittest.TestCase):
             ],
         )
 
-        self.assertNotIn("<https://example.com/1|", messages[0])
+        self.assertIn("<https://example.com/1|", messages[0])
+
+    def test_format_site_notice_tables_labels_procurement_plan(self) -> None:
+        messages = format_site_notice_tables(
+            "g2b",
+            [
+                NoticeCandidate(
+                    site_code="g2b",
+                    site_notice_key="plan-1",
+                    title="\ubc1c\uc8fc\uacc4\ud68d",
+                    source_url="https://www.g2b.go.kr/",
+                    organization="\uae30\uad00",
+                    start_at=datetime(2026, 7, 30, 9, 0),
+                    raw_payload={
+                        "announcement_stage": "procurement_plan",
+                        "oderPlanPgstNm": "\uac8c\uc2dc\uc911",
+                    },
+                )
+            ],
+        )
+
+        self.assertIn("[\ubc1c\uc8fc\uacc4\ud68d] \ubc1c\uc8fc\uacc4\ud68d", messages[0])
+        self.assertIn("\uac8c\uc2dc\uc77c: 2026-07-30 09:00 | \uc0c1\ud0dc: \uac8c\uc2dc\uc911", messages[0])
+        self.assertNotIn("<https://www.g2b.go.kr/|", messages[0])
+
+    def test_format_site_notice_tables_labels_pre_specification(self) -> None:
+        messages = format_site_notice_tables(
+            "g2b",
+            [
+                NoticeCandidate(
+                    site_code="g2b",
+                    site_notice_key="spec-1",
+                    title="\uc0ac\uc804\uaddc\uaca9",
+                    source_url="https://example.com/spec-1",
+                    deadline_at=datetime(2026, 7, 31, 18, 0),
+                    raw_payload={"announcement_stage": "pre_specification"},
+                )
+            ],
+        )
+
+        self.assertIn("[\uc0ac\uc804\uaddc\uaca9] \uc0ac\uc804\uaddc\uaca9", messages[0])
+        self.assertIn("\uc758\uacac\ub4f1\ub85d \ub9c8\uac10: 2026-07-31 18:00", messages[0])
 
     def test_format_site_notice_tables_keeps_direct_link_for_iris(self) -> None:
         messages = format_site_notice_tables(

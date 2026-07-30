@@ -46,6 +46,25 @@ def create_schema(engine) -> None:
 def _upgrade_schema(engine) -> None:
     inspector = inspect(engine)
     with engine.begin() as connection:
+        if inspector.has_table("slack_shares"):
+            slack_share_columns = {
+                column["name"] for column in inspector.get_columns("slack_shares")
+            }
+            if "suppressed_at" not in slack_share_columns:
+                connection.execute(
+                    text("ALTER TABLE slack_shares ADD COLUMN suppressed_at DATETIME")
+                )
+            if "suppressed_reason" not in slack_share_columns:
+                connection.execute(
+                    text("ALTER TABLE slack_shares ADD COLUMN suppressed_reason VARCHAR(255)")
+                )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_slack_shares_publish_state "
+                    "ON slack_shares(channel_id, suppressed_at, shared_at)"
+                )
+            )
+
         if not inspector.has_table("notice_attachments"):
             connection.execute(
                 text(

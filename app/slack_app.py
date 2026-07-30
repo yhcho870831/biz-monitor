@@ -17,6 +17,7 @@ from app.services.deadline import is_active_notice
 from app.services.notice_meta import enrich_notice_candidate
 from app.services.notifier import format_notice, get_notice_screenshot_path
 from app.types import NoticeCandidate
+from app.utils import now_kst
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ def _three_star_notice_messages(session, channel_id: str) -> list[str]:
     messages = []
     for notice, _share in list_shared_notices(session, channel_id):
         candidate = _notice_from_row(notice)
-        if not is_active_notice(candidate, datetime.utcnow()):
+        if not is_active_notice(candidate, now_kst()):
             continue
         enrich_notice_candidate(session, candidate)
         if candidate.priority_score == 3:
@@ -182,7 +183,7 @@ def build_slack_app(settings: Settings, session_factory, collector_registry, not
                             reply(channel_id, event_ts, message)
                         for notice, _share in list_shared_notices(session, channel_id):
                             candidate = _notice_from_row(notice)
-                            if not is_active_notice(candidate, datetime.utcnow()):
+                            if not is_active_notice(candidate, now_kst()):
                                 continue
                             enrich_notice_candidate(session, candidate)
                             if candidate.priority_score < 3:

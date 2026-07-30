@@ -30,7 +30,11 @@ def ensure_notice_screenshot(candidate: NoticeCandidate) -> str:
     if existing_path:
         return existing_path
 
-    if (candidate.raw_payload or {}).get("announcement_stage") == "pre_announcement":
+    if (candidate.raw_payload or {}).get("announcement_stage") in {
+        "pre_announcement",
+        "procurement_plan",
+        "pre_specification",
+    }:
         return ""
 
     if candidate.site_code != "g2b" or not candidate.source_url:

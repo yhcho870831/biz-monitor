@@ -49,7 +49,11 @@ def attachment_category_label(category: str) -> str:
 
 
 def should_collect_attachments(candidate: NoticeCandidate) -> bool:
-    if (candidate.raw_payload or {}).get("announcement_stage") == "pre_announcement":
+    if (candidate.raw_payload or {}).get("announcement_stage") in {
+        "pre_announcement",
+        "procurement_plan",
+        "pre_specification",
+    }:
         return False
     return candidate.site_code in {"g2b", "d2b"} and candidate.priority_score >= 1
 

@@ -36,7 +36,12 @@ from app.repositories.ai_evaluations import (
     mark_ai_recommendations_posted,
 )
 from app.repositories.notices import delete_expired_notices, upsert_notice
-from app.repositories.shares import already_shared, record_file_share, record_share
+from app.repositories.shares import (
+    already_shared,
+    record_file_share,
+    record_share,
+    suppress_share,
+)
 from app.repositories.sites import list_enabled_site_keywords
 from app.services.calendar import cleanup_inactive_saved_notices
 from app.services.attachments import (
@@ -72,7 +77,7 @@ from app.services.ai_relevance import (
 )
 from app.services.screenshots import ensure_notice_screenshot
 from app.types import NoticeCandidate
-from app.utils import normalize_text
+from app.utils import normalize_text, now_kst
 
 logger = logging.getLogger(__name__)
 
@@ -421,7 +426,7 @@ def process_job(
                 scope_reason,
             )
             continue
-        if not is_active_notice(candidate, datetime.utcnow()):
+        if not is_active_notice(candidate, now_kst()):
             logger.info(
                 "deadline filtered site=%s search_term=%s title=%s",
                 job.site_code,
@@ -968,6 +973,29 @@ def send_grouped_site_messages(
         target_site_codes = sorted(site_codes or stats.site_pending_shares.keys())
         for site_code in target_site_codes:
             raw_items = list(stats.site_pending_shares.get(site_code, {}).values())
+            items_after_lifecycle_check: list[ScheduledShareItem] = []
+            for item in raw_items:
+                if is_active_notice(item.candidate, now_kst()):
+                    items_after_lifecycle_check.append(item)
+                    continue
+                queued_share = session.execute(
+                    select(SlackShare).where(
+                        SlackShare.notice_id == item.notice_id,
+                        SlackShare.channel_id == item.channel_id,
+                        or_(SlackShare.message_ts.is_(None), SlackShare.message_ts == ""),
+                    )
+                ).scalars().first()
+                if queued_share is not None:
+                    suppress_share(session, queued_share, "inactive_before_publish", commit=False)
+                logger.info(
+                    "publish lifecycle filtered site=%s notice_id=%s title=%s",
+                    site_code,
+                    item.notice_id,
+                    item.candidate.title,
+                )
+            if len(items_after_lifecycle_check) != len(raw_items):
+                session.commit()
+            raw_items = items_after_lifecycle_check
             already_shared_count = stats.site_shared_counts.get(site_code, 0)
             site_limit = _site_notice_limit(settings, site_code)
             if site_limit > 0 and already_shared_count >= site_limit:
@@ -1181,6 +1209,7 @@ def _pending_slack_share_rows(session, settings) -> list[tuple[SlackShare, Notic
         .join(Notice, Notice.id == SlackShare.notice_id)
         .where(SlackShare.channel_id == settings.slack_briefing_channel_id)
         .where(or_(SlackShare.message_ts.is_(None), SlackShare.message_ts == ""))
+        .where(SlackShare.suppressed_at.is_(None))
         .order_by(SlackShare.shared_at.asc(), SlackShare.id.asc())
     )
     return list(session.execute(stmt).all())
@@ -1202,6 +1231,12 @@ def _deferred_ai_cutoff(settings) -> datetime:
     return max(cutoff, parsed)
 
 
+def _is_actionable_bid_candidate(candidate: NoticeCandidate) -> bool:
+    """AI recommendations are reserved for notices a bidder can act on now."""
+    stage = (candidate.raw_payload or {}).get("announcement_stage")
+    return stage not in {"pre_announcement", "procurement_plan", "pre_specification"}
+
+
 def publish_deferred_scheduled_notices(
     session_factory,
     notifier: SlackNotifier,
@@ -1217,6 +1252,15 @@ def publish_deferred_scheduled_notices(
         rows = _pending_slack_share_rows(session, settings)
         for share, notice in rows:
             candidate = _notice_candidate_from_notice(notice)
+            if not is_active_notice(candidate, now_kst()):
+                suppress_share(session, share, "inactive_at_deferred_publish", commit=False)
+                logger.info(
+                    "deferred publish suppressed inactive site=%s notice_id=%s title=%s",
+                    notice.site_code,
+                    notice.id,
+                    candidate.title,
+                )
+                continue
             enrich_notice_candidate(session, candidate)
             stats.site_pending_shares.setdefault(notice.site_code, {})[notice.id] = (
                 ScheduledShareItem(
@@ -1227,6 +1271,7 @@ def publish_deferred_scheduled_notices(
                     job_id=share.job_id or 0,
                 )
             )
+        session.commit()
 
     stats.total_shared = send_grouped_site_messages(
         session_factory,
@@ -1263,12 +1308,13 @@ def prepare_deferred_ai_evaluations(
             .join(Notice, Notice.id == SlackShare.notice_id)
             .where(SlackShare.channel_id == settings.slack_briefing_channel_id)
             .where(SlackShare.shared_at >= cutoff)
+            .where(SlackShare.suppressed_at.is_(None))
             .order_by(SlackShare.shared_at.asc(), SlackShare.id.asc())
         )
         rows = list(session.execute(stmt).all())
         candidates: list[tuple[NoticeCandidate, Notice]] = []
         seen_notice_ids: set[int] = set()
-        for _share, notice in rows:
+        for share, notice in rows:
             if notice.id in seen_notice_ids:
                 continue
             seen_notice_ids.add(notice.id)
@@ -1276,12 +1322,18 @@ def prepare_deferred_ai_evaluations(
             if latest is not None and latest.status == "done":
                 continue
             candidate = _notice_candidate_from_notice(notice)
+            if not is_active_notice(candidate, now_kst()):
+                suppress_share(session, share, "inactive_before_ai_evaluation", commit=False)
+                continue
+            if not _is_actionable_bid_candidate(candidate):
+                continue
             enrich_notice_candidate(session, candidate)
             if candidate.priority_score < int(
                 getattr(settings, "ai_relevance_min_rule_score", 1)
             ):
                 continue
             candidates.append((candidate, notice))
+        session.commit()
         candidates.sort(key=lambda item: _candidate_ai_order_key((item[0], True, "")))
         for candidate, notice in candidates[:max_count]:
             payload = evaluate_notice_relevance(session, settings, notice, candidate)
@@ -1298,6 +1350,7 @@ def _latest_unposted_ai_items(session, settings) -> tuple[list[AiEvaluatedItem],
         .join(Notice, Notice.id == SlackShare.notice_id)
         .where(SlackShare.channel_id == settings.slack_briefing_channel_id)
         .where(SlackShare.shared_at >= cutoff)
+        .where(SlackShare.suppressed_at.is_(None))
         .order_by(SlackShare.shared_at.asc(), SlackShare.id.asc())
     )
     items: list[AiEvaluatedItem] = []
@@ -1308,6 +1361,11 @@ def _latest_unposted_ai_items(session, settings) -> tuple[list[AiEvaluatedItem],
             continue
         seen_notice_ids.add(notice.id)
         candidate = _notice_candidate_from_notice(notice)
+        if not is_active_notice(candidate, now_kst()):
+            suppress_share(session, share, "inactive_before_ai_recommendation", commit=False)
+            continue
+        if not _is_actionable_bid_candidate(candidate):
+            continue
         enrich_notice_candidate(session, candidate)
         if candidate.priority_score < int(getattr(settings, "ai_relevance_min_rule_score", 1)):
             continue
@@ -1328,6 +1386,7 @@ def _latest_unposted_ai_items(session, settings) -> tuple[list[AiEvaluatedItem],
         )
         if evaluation is not None and evaluation.status == "done":
             posted_evaluation_ids.append(evaluation.id)
+    session.commit()
     return items, posted_evaluation_ids
 
 

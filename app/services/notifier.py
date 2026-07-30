@@ -9,7 +9,7 @@ from slack_sdk.errors import SlackApiError
 
 from app.services.notice_meta import format_notice_tag, format_priority_stars
 from app.types import NoticeCandidate
-from app.utils import extract_datetimes
+from app.utils import extract_datetimes, normalize_text
 
 SITE_DISPLAY_NAMES = {
     "g2b": "\ub098\ub77c\uc7a5\ud130",
@@ -185,12 +185,35 @@ def _display_deadline(candidate: NoticeCandidate) -> str:
     return deadline.strftime("%Y-%m-%d %H:%M")
 
 
+def _announcement_stage(candidate: NoticeCandidate) -> str:
+    return str((candidate.raw_payload or {}).get("announcement_stage") or "")
+
+
+def _display_schedule(candidate: NoticeCandidate) -> str:
+    """Use a field name that matches the lifecycle represented by the row."""
+    stage = _announcement_stage(candidate)
+    if stage in {"pre_announcement", "procurement_plan"}:
+        posted_at = candidate.start_at or _period_text_deadline(candidate)
+        value = posted_at.strftime("%Y-%m-%d %H:%M") if posted_at else "\ubbf8\uae30\uc7ac"
+        status = normalize_text(
+            str((candidate.raw_payload or {}).get("oderPlanPgstNm") or "")
+        )
+        if status:
+            value = "%s | \uc0c1\ud0dc: %s" % (value, status)
+        return "\uac8c\uc2dc\uc77c: %s" % value
+    if stage == "pre_specification":
+        return "\uc758\uacac\ub4f1\ub85d \ub9c8\uac10: %s" % _display_deadline(candidate)
+    return "\uc785\ucc30\ub9c8\uac10: %s" % _display_deadline(candidate)
+
+
 def _preannouncement_label(candidate: NoticeCandidate) -> str:
     raw_payload = candidate.raw_payload or {}
     if raw_payload.get("iris_result_type") == "schedule":
         return "[\uc0ac\uc804\uacf5\uace0] "
-    if raw_payload.get("announcement_stage") == "pre_announcement":
-        return "[\uc0ac\uc804\uacf5\uace0] "
+    if raw_payload.get("announcement_stage") in {"pre_announcement", "procurement_plan"}:
+        return "[\ubc1c\uc8fc\uacc4\ud68d] "
+    if raw_payload.get("announcement_stage") == "pre_specification":
+        return "[\uc0ac\uc804\uaddc\uaca9] "
     return ""
 
 
@@ -198,10 +221,7 @@ def _title_link_for_candidate(
     candidate: NoticeCandidate,
     title_link_override: str | None = None,
 ) -> str | None:
-    if (
-        candidate.site_code in {"g2b", "d2b"}
-        and (candidate.raw_payload or {}).get("announcement_stage") != "pre_announcement"
-    ):
+    if _announcement_stage(candidate) in {"pre_announcement", "procurement_plan"}:
         return (title_link_override or "").strip() or None
     return (title_link_override or candidate.source_url or "").strip() or None
 
@@ -229,7 +249,7 @@ def format_notice(candidate: NoticeCandidate, title_link_override: str | None = 
         ),
         "\ubc1c\uc8fc\ucc98: %s" % (candidate.organization or "\ubbf8\uae30\uc7ac"),
         "\ud0dc\uadf8: %s" % format_notice_tag(candidate.notice_tag),
-        "\uc785\ucc30\ub9c8\uac10: %s" % _display_deadline(candidate),
+        _display_schedule(candidate),
         "\uc911\uc694\ub3c4: %s" % format_priority_stars(candidate.priority_score),
         "\ub9c1\ud06c: %s" % candidate.source_url,
     ]
@@ -319,9 +339,9 @@ def format_site_notice_tables(
                 )
             )
             lines.append(
-                "   \uc785\ucc30\ub9c8\uac10: %s | \ubc1c\uc8fc\ucc98: %s | \uae08\uc561: %s"
+                "   %s | \ubc1c\uc8fc\ucc98: %s | \uae08\uc561: %s"
                 % (
-                    _display_deadline(candidate),
+                    _display_schedule(candidate),
                     candidate.organization or "\ubbf8\uae30\uc7ac",
                     _format_amount_short(candidate.amount_value),
                 )
