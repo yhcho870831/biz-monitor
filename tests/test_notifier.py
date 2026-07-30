@@ -3,9 +3,11 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
+from app.collectors.g2b import PRE_SPECIFICATION_LIST_URL
 from app.services.notifier import (
     format_empty_scheduled,
     format_no_share_scheduled,
+    format_notice,
     format_site_notice_tables,
 )
 from app.types import NoticeCandidate
@@ -99,14 +101,17 @@ class FormatNotifierTest(unittest.TestCase):
 
         self.assertIn("<https://example.com/1|", messages[0])
 
-    def test_format_site_notice_tables_labels_procurement_plan(self) -> None:
+    def test_format_site_notice_tables_labels_g2b_list_row_as_pre_specification(self) -> None:
+        # The 발주목록 route queries srchTy=0002, which is 사전규격공개, so rows from
+        # it must not be labelled 발주계획 even under the legacy stage values.
         messages = format_site_notice_tables(
             "g2b",
             [
                 NoticeCandidate(
                     site_code="g2b",
-                    site_notice_key="plan-1",
-                    title="\ubc1c\uc8fc\uacc4\ud68d",
+                    site_notice_key="prespec:R26BD00258247",
+                    title="\uc0ac\uc804\uaddc\uaca9",
+                    # Rows collected before the fix stored the portal home here.
                     source_url="https://www.g2b.go.kr/",
                     organization="\uae30\uad00",
                     start_at=datetime(2026, 7, 30, 9, 0),
@@ -118,9 +123,9 @@ class FormatNotifierTest(unittest.TestCase):
             ],
         )
 
-        self.assertIn("[\ubc1c\uc8fc\uacc4\ud68d] \ubc1c\uc8fc\uacc4\ud68d", messages[0])
-        self.assertIn("\uac8c\uc2dc\uc77c: 2026-07-30 09:00 | \uc0c1\ud0dc: \uac8c\uc2dc\uc911", messages[0])
-        self.assertNotIn("<https://www.g2b.go.kr/|", messages[0])
+        self.assertIn("[\uc0ac\uc804\uaddc\uaca9] \uc0ac\uc804\uaddc\uaca9", messages[0])
+        self.assertIn("\uacf5\uac1c\uc77c: 2026-07-30 09:00 | \uc0c1\ud0dc: \uac8c\uc2dc\uc911", messages[0])
+        self.assertIn("<%s|" % PRE_SPECIFICATION_LIST_URL, messages[0])
 
     def test_format_site_notice_tables_labels_pre_specification(self) -> None:
         messages = format_site_notice_tables(
@@ -139,6 +144,42 @@ class FormatNotifierTest(unittest.TestCase):
 
         self.assertIn("[\uc0ac\uc804\uaddc\uaca9] \uc0ac\uc804\uaddc\uaca9", messages[0])
         self.assertIn("\uc758\uacac\ub4f1\ub85d \ub9c8\uac10: 2026-07-31 18:00", messages[0])
+
+    def test_format_notice_shows_pre_specification_registration_number(self) -> None:
+        message = format_notice(
+            NoticeCandidate(
+                site_code="g2b",
+                site_notice_key="prespec:R26BD00258247",
+                title="\uc218\uc18c\ucd94\uc9c4\uc120\ubc15 \uac10\ub9ac\uc6a9\uc5ed",
+                source_url="https://www.g2b.go.kr/",
+                organization="\uc6b8\uc0b0\ub300\ud559\uad50 \uc0b0\ud559\ud611\ub825\ub2e8",
+                start_at=datetime(2026, 7, 29, 9, 0),
+                notice_no="R26BD00258247",
+                raw_payload={
+                    "announcement_stage": "pre_specification",
+                    "bfSpecRegNo": "R26BD00258247",
+                    "oderPlanPgstNm": "\uac8c\uc2dc\uc911",
+                },
+            )
+        )
+
+        self.assertIn("\uc0ac\uc804\uaddc\uaca9\ub4f1\ub85d\ubc88\ud638: R26BD00258247", message)
+        self.assertIn("\ub9c1\ud06c: %s" % PRE_SPECIFICATION_LIST_URL, message)
+
+    def test_format_notice_omits_registration_number_for_bid_notice(self) -> None:
+        message = format_notice(
+            NoticeCandidate(
+                site_code="g2b",
+                site_notice_key="bid-1",
+                title="\uc785\ucc30\uacf5\uace0",
+                source_url="https://example.com/bid",
+                deadline_at=datetime(2026, 8, 10, 18, 0),
+                notice_no="20260810123",
+            )
+        )
+
+        self.assertNotIn("\uc0ac\uc804\uaddc\uaca9\ub4f1\ub85d\ubc88\ud638", message)
+        self.assertIn("\uc785\ucc30\ub9c8\uac10: 2026-08-10 18:00", message)
 
     def test_format_site_notice_tables_keeps_direct_link_for_iris(self) -> None:
         messages = format_site_notice_tables(

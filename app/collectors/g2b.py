@@ -15,7 +15,17 @@ from app.utils import extract_datetimes, make_period_text, normalize_text
 
 
 XML_NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-PROCUREMENT_PLAN_STAGE = "procurement_plan"
+# 발주목록 dispatches on srchTy: 0001 is 발주계획현황 and 0002 is 사전규격(사전규격공개).
+# This collector queries 0002, and the matching detail screen is 사전규격상세조회
+# (PRVA004_02), keyed on bfSpecRegNo — the value this list returns as oderPlanNo.
+PRE_SPECIFICATION_STAGE = "pre_specification"
+PRE_SPECIFICATION_SEARCH_TYPE = "0002"
+# Verified to make the screen issue selectOderReqList.do with srchTy=0002, i.e.
+# it lands on the 사전규격공개 list. There is no equivalent stateless URL for a
+# single row: the detail screen is reached through an in-app menu move.
+PRE_SPECIFICATION_LIST_URL = (
+    "https://www.g2b.go.kr/link/PRCA001_04/single/?srch=0002&flag=cnrtSl"
+)
 PRE_ANNOUNCEMENT_PAGE_SIZE = 100
 G2B_ACTION_TIMEOUT_MS = 45000
 G2B_DOWNLOAD_TIMEOUT_MS = 20000
@@ -104,9 +114,8 @@ class G2BCollector(BaseCollector):
             posted_at = dates[0] if dates else None
             amount_value = self._coerce_amount_value(payload.get("bgtSumAmt"))
 
-            # This route is an order/procurement-plan list, not the separate
-            # G2B pre-specification service. Keep the legacy key for dedupe.
-            payload["announcement_stage"] = PROCUREMENT_PLAN_STAGE
+            payload["announcement_stage"] = PRE_SPECIFICATION_STAGE
+            payload["bfSpecRegNo"] = notice_no
             if amount_value is not None:
                 payload["amount_value"] = amount_value
                 payload["amount_text"] = f"{amount_value:,}원"
@@ -116,7 +125,7 @@ class G2BCollector(BaseCollector):
                     site_code=self.site_code,
                     site_notice_key=site_notice_key,
                     title=title,
-                    source_url=self.list_url,
+                    source_url=PRE_SPECIFICATION_LIST_URL,
                     organization=organization,
                     notice_no=notice_no or None,
                     start_at=posted_at,
@@ -201,7 +210,7 @@ class G2BCollector(BaseCollector):
                         !!window.mf_wfm_container_dlOderReqSrchM &&
                         !!window.mf_wfm_container_gridView1
                 """,
-                evaluate_script="""async ({ term, pageSize, timeoutMs }) => {
+                evaluate_script="""async ({ term, pageSize, timeoutMs, searchType }) => {
                     const withTimeout = (promise, label) =>
                         Promise.race([
                             Promise.resolve(promise),
@@ -220,7 +229,7 @@ class G2BCollector(BaseCollector):
                         throw new Error("g2b procurement plan bindings not ready");
                     }
 
-                    dl.set("srchTy", "0002");
+                    dl.set("srchTy", searchType);
                     dl.set("bizNm", term);
                     dl.set("currentPage", 1);
                     dl.set("recordCountPerPage", String(pageSize));
@@ -261,8 +270,9 @@ class G2BCollector(BaseCollector):
                     "term": normalize_text(term),
                     "pageSize": PRE_ANNOUNCEMENT_PAGE_SIZE,
                     "timeoutMs": G2B_ACTION_TIMEOUT_MS,
+                    "searchType": PRE_SPECIFICATION_SEARCH_TYPE,
                 },
-                label="g2b procurement plan",
+                label="g2b pre-specification",
             )
             page.wait_for_timeout(800)
             return rows if isinstance(rows, list) else []

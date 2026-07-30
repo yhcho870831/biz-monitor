@@ -7,6 +7,8 @@ from datetime import datetime
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+from app.collectors.g2b import PRE_SPECIFICATION_LIST_URL
+from app.services.deadline import G2B_PRE_SPECIFICATION_STAGES
 from app.services.notice_meta import format_notice_tag, format_priority_stars
 from app.types import NoticeCandidate
 from app.utils import extract_datetimes, normalize_text
@@ -192,38 +194,58 @@ def _announcement_stage(candidate: NoticeCandidate) -> str:
 def _display_schedule(candidate: NoticeCandidate) -> str:
     """Use a field name that matches the lifecycle represented by the row."""
     stage = _announcement_stage(candidate)
-    if stage in {"pre_announcement", "procurement_plan"}:
-        posted_at = candidate.start_at or _period_text_deadline(candidate)
-        value = posted_at.strftime("%Y-%m-%d %H:%M") if posted_at else "\ubbf8\uae30\uc7ac"
+    if stage in G2B_PRE_SPECIFICATION_STAGES:
+        # 의견등록마감일시 only exists on the detail screen, which the list route
+        # does not carry, so fall back to the disclosure date and status.
+        if candidate.deadline_at is not None:
+            return "\uc758\uacac\ub4f1\ub85d \ub9c8\uac10: %s" % _display_deadline(candidate)
+        opened_at = candidate.start_at or _period_text_deadline(candidate)
+        value = opened_at.strftime("%Y-%m-%d %H:%M") if opened_at else "\ubbf8\uae30\uc7ac"
         status = normalize_text(
             str((candidate.raw_payload or {}).get("oderPlanPgstNm") or "")
         )
         if status:
             value = "%s | \uc0c1\ud0dc: %s" % (value, status)
-        return "\uac8c\uc2dc\uc77c: %s" % value
-    if stage == "pre_specification":
-        return "\uc758\uacac\ub4f1\ub85d \ub9c8\uac10: %s" % _display_deadline(candidate)
+        return "\uacf5\uac1c\uc77c: %s" % value
     return "\uc785\ucc30\ub9c8\uac10: %s" % _display_deadline(candidate)
+
+
+def _pre_specification_reg_no(candidate: NoticeCandidate) -> str:
+    if _announcement_stage(candidate) not in G2B_PRE_SPECIFICATION_STAGES:
+        return ""
+    raw_payload = candidate.raw_payload or {}
+    for key in ("bfSpecRegNo", "oderPlanNo"):
+        value = normalize_text(str(raw_payload.get(key) or ""))
+        if value:
+            return value
+    return normalize_text(candidate.notice_no or "")
 
 
 def _preannouncement_label(candidate: NoticeCandidate) -> str:
     raw_payload = candidate.raw_payload or {}
     if raw_payload.get("iris_result_type") == "schedule":
         return "[\uc0ac\uc804\uacf5\uace0] "
-    if raw_payload.get("announcement_stage") in {"pre_announcement", "procurement_plan"}:
-        return "[\ubc1c\uc8fc\uacc4\ud68d] "
-    if raw_payload.get("announcement_stage") == "pre_specification":
+    if raw_payload.get("announcement_stage") in G2B_PRE_SPECIFICATION_STAGES:
         return "[\uc0ac\uc804\uaddc\uaca9] "
     return ""
+
+
+def _display_source_url(candidate: NoticeCandidate) -> str:
+    """Rows from the 발주목록 route stored the portal home as their source URL.
+
+    Point them at the 사전규격공개 list instead, so the registration number can
+    be looked up without re-collecting every stored row.
+    """
+    if _announcement_stage(candidate) in G2B_PRE_SPECIFICATION_STAGES:
+        return PRE_SPECIFICATION_LIST_URL
+    return candidate.source_url or ""
 
 
 def _title_link_for_candidate(
     candidate: NoticeCandidate,
     title_link_override: str | None = None,
 ) -> str | None:
-    if _announcement_stage(candidate) in {"pre_announcement", "procurement_plan"}:
-        return (title_link_override or "").strip() or None
-    return (title_link_override or candidate.source_url or "").strip() or None
+    return (title_link_override or _display_source_url(candidate)).strip() or None
 
 
 def _format_notice_title(
@@ -251,10 +273,15 @@ def format_notice(candidate: NoticeCandidate, title_link_override: str | None = 
         "\ud0dc\uadf8: %s" % format_notice_tag(candidate.notice_tag),
         _display_schedule(candidate),
         "\uc911\uc694\ub3c4: %s" % format_priority_stars(candidate.priority_score),
-        "\ub9c1\ud06c: %s" % candidate.source_url,
+        "\ub9c1\ud06c: %s" % _display_source_url(candidate),
     ]
     if candidate.amount_value is not None:
         lines.insert(4, "\uae08\uc561: %s" % f"{candidate.amount_value:,}\uc6d0")
+    # The list route has no per-row detail URL, so the registration number is the
+    # only way for a reader to locate the record on the linked screen.
+    reg_no = _pre_specification_reg_no(candidate)
+    if reg_no:
+        lines.insert(3, "\uc0ac\uc804\uaddc\uaca9\ub4f1\ub85d\ubc88\ud638: %s" % reg_no)
     return "\n".join(lines)
 
 
