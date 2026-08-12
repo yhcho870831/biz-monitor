@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -12,6 +13,11 @@ from app.collectors.base import BaseCollector
 from app.collectors.playwright_utils import browser_page
 from app.types import NoticeCandidate
 from app.utils import make_period_text, normalize_text, parse_datetime
+
+
+D2B_RETURN_TIMEOUT_MS = 15_000
+
+logger = logging.getLogger(__name__)
 
 
 class D2BCollector(BaseCollector):
@@ -44,7 +50,7 @@ class D2BCollector(BaseCollector):
                 register_deadline = parse_datetime(cell_values[6]) if len(cell_values) > 6 else None
                 bid_deadline = parse_datetime(cell_values[7]) if len(cell_values) > 7 else None
 
-                detail = self._extract_detail(page, link)
+                detail = self._extract_detail(page, link, term)
                 detail_title = detail.get("title") or title
                 detail_notice_no = detail.get("notice_no") or notice_no
                 detail_reference_no = detail.get("reference_no") or reference_no
@@ -83,7 +89,7 @@ class D2BCollector(BaseCollector):
             has=page.locator("a[href='#none;']")
         )
 
-    def _extract_detail(self, page, link) -> dict:
+    def _extract_detail(self, page, link, term: str) -> dict:
         link.click()
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(1000)
@@ -125,9 +131,30 @@ class D2BCollector(BaseCollector):
             or "기간 미기재"
         )
 
-        page.go_back(wait_until="networkidle")
-        page.wait_for_timeout(500)
+        self._return_to_result_page(page, term)
         return detail
+
+    def _return_to_result_page(self, page, term: str) -> None:
+        """Restore the list after a detail scrape without failing the whole job.
+
+        D2B sometimes keeps background requests open, so waiting for
+        ``networkidle`` after ``go_back`` can time out even though the browser is
+        otherwise usable.  A single direct list-page reload is the recovery path
+        for that transient navigation failure.
+        """
+        try:
+            page.go_back(
+                wait_until="domcontentloaded",
+                timeout=D2B_RETURN_TIMEOUT_MS,
+            )
+            page.wait_for_timeout(500)
+        except Exception:
+            logger.warning(
+                "d2b detail return failed; reopening result page once term=%s",
+                normalize_text(term),
+                exc_info=True,
+            )
+            self._search_page(page, term)
 
     def _capture_detail_screenshot(self, page, detail: dict) -> str:
         base_dir = Path(os.getenv("TEMP_DIR", os.path.join(os.getcwd(), "output", "tmp")))
