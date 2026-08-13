@@ -80,6 +80,23 @@ class DeferredAiRetryTest(unittest.TestCase):
         self.assertEqual(attempted, 3)
         self.assertEqual(evaluated_notice_ids, [first_id, second_id, first_id])
 
+    def test_does_not_retry_failure_after_its_error_was_posted(self) -> None:
+        self._add_notice("posted-final-failure")
+        final_failure = SimpleNamespace(
+            status="failed",
+            ai_recommendation_posted_at=datetime.utcnow(),
+        )
+
+        with patch.object(
+            scheduler_module,
+            "get_latest_ai_evaluation",
+            return_value=final_failure,
+        ), patch.object(scheduler_module, "evaluate_notice_relevance") as evaluate:
+            attempted = prepare_deferred_ai_evaluations(self.session_factory, self.settings)
+
+        self.assertEqual(attempted, 0)
+        evaluate.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

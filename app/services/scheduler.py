@@ -1337,7 +1337,12 @@ def prepare_deferred_ai_evaluations(
                 continue
             seen_notice_ids.add(notice.id)
             latest = get_latest_ai_evaluation(session, notice.id)
-            if latest is not None and latest.status == "done":
+            # A delivered terminal result (success or final failure) must not be
+            # evaluated again in a later deferred-AI cycle.
+            if latest is not None and (
+                latest.status == "done"
+                or latest.ai_recommendation_posted_at is not None
+            ):
                 continue
             candidate = _notice_candidate_from_notice(notice)
             if not is_active_notice(candidate, now_kst()):
