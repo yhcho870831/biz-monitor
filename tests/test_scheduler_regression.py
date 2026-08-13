@@ -199,6 +199,53 @@ class SiteAiTrailingTest(unittest.TestCase):
         self.assertEqual(len(stats.ai_evaluated_items), 1)
         self.assertIsInstance(stats.ai_evaluated_items[0], AiEvaluatedItem)
 
+    def test_trailing_retries_failed_item_after_all_first_attempts(self) -> None:
+        settings = _ai_settings()
+        first = NoticeCandidate(
+            site_code="nia",
+            site_notice_key="k1",
+            title="first",
+            source_url="https://example.com/1",
+            priority_score=2,
+        )
+        second = NoticeCandidate(
+            site_code="nia",
+            site_notice_key="k2",
+            title="second",
+            source_url="https://example.com/2",
+            priority_score=2,
+        )
+        stats = PendingRunStats(
+            site_ai_candidates={
+                "nia": [
+                    AiCandidateItem(1, first, "C123", True),
+                    AiCandidateItem(2, second, "C123", True),
+                ]
+            }
+        )
+
+        @contextmanager
+        def session_factory():
+            yield SimpleNamespace(get=lambda _model, notice_id: SimpleNamespace(id=notice_id))
+
+        done = {"status": "done", "fit_score": 90, "recommended_action": "review"}
+        with patch.object(
+            scheduler_module,
+            "evaluate_notice_relevance",
+            side_effect=[{"status": "failed"}, done, done],
+        ) as evaluate:
+            _run_site_ai_trailing(
+                session_factory,
+                MagicMock(),
+                stats,
+                settings,
+                "nia",
+            )
+
+        self.assertEqual([call.args[2].id for call in evaluate.call_args_list], [1, 2, 1])
+        self.assertEqual(len(stats.ai_evaluated_items), 2)
+        self.assertEqual(stats.ai_evaluated_items[0].payload, done)
+
 
 class AggregateAiRecommendationSendTest(unittest.TestCase):
     def test_send_ai_recommendation_result_posts_one_combined_message(self) -> None:
@@ -253,7 +300,7 @@ class AggregateAiRecommendationSendTest(unittest.TestCase):
         self.assertIn("G2B notice", args[1])
 
 
-    def test_ai_recommendation_reports_incomplete_for_next_publish_cycle(self) -> None:
+    def test_ai_recommendation_reports_final_failure_as_error(self) -> None:
         settings = _ai_settings(site_enabled={"nia": True})
         message = scheduler_module._format_ai_recommendation_result(
             [
@@ -267,14 +314,14 @@ class AggregateAiRecommendationSendTest(unittest.TestCase):
                         priority_score=2,
                     ),
                     channel_id="C123",
-                    payload={"status": "timeout"},
+                    payload={"status": "failed", "failure_reason": "gateway rate limit"},
                 )
             ],
             settings,
         )
 
-        self.assertIn("\ubbf8\uc644\ub8cc", message)
-        self.assertIn("\ub2e4\uc74c \uac8c\uc2dc \uc8fc\uae30", message)
+        self.assertIn("\uc624\ub958", message)
+        self.assertIn("gateway rate limit", message)
 
 
 class BroadCompoundRegressionTest(unittest.TestCase):

@@ -901,7 +901,8 @@ def _run_site_ai_trailing(
         candidates,
         key=lambda item: (-item.candidate.priority_score, item.candidate.title),
     )
-    evaluated: list[AiEvaluatedItem] = []
+    evaluated_payloads: dict[int, dict | None] = {}
+    retry_items: list[AiCandidateItem] = []
     with session_factory() as session:
         for item in ordered:
             if not _can_request_site_ai_relevance(settings, stats, site_code):
@@ -911,14 +912,27 @@ def _run_site_ai_trailing(
                 continue
             payload = evaluate_notice_relevance(session, settings, notice, item.candidate)
             _mark_site_ai_relevance_used(stats, site_code)
-            evaluated.append(
-                AiEvaluatedItem(
-                    notice_id=item.notice_id,
-                    candidate=item.candidate,
-                    channel_id=item.channel_id,
-                    payload=payload,
-                )
-            )
+            evaluated_payloads[item.notice_id] = payload
+            if _ai_evaluation_needs_retry(payload):
+                retry_items.append(item)
+        # Finish every first attempt before retrying a transient failure.
+        for item in retry_items:
+            notice = session.get(Notice, item.notice_id)
+            if notice is None:
+                continue
+            payload = evaluate_notice_relevance(session, settings, notice, item.candidate)
+            _mark_site_ai_relevance_used(stats, site_code)
+            evaluated_payloads[item.notice_id] = payload
+    evaluated = [
+        AiEvaluatedItem(
+            notice_id=item.notice_id,
+            candidate=item.candidate,
+            channel_id=item.channel_id,
+            payload=evaluated_payloads[item.notice_id],
+        )
+        for item in ordered
+        if item.notice_id in evaluated_payloads
+    ]
     if not evaluated:
         return
     stats.ai_evaluated_items.extend(evaluated)
@@ -1237,6 +1251,10 @@ def _is_actionable_bid_candidate(candidate: NoticeCandidate) -> bool:
     return stage not in {"pre_announcement", "procurement_plan", "pre_specification"}
 
 
+def _ai_evaluation_needs_retry(payload: dict | None) -> bool:
+    return not payload or payload.get("status") != "done"
+
+
 def publish_deferred_scheduled_notices(
     session_factory,
     notifier: SlackNotifier,
@@ -1335,7 +1353,15 @@ def prepare_deferred_ai_evaluations(
             candidates.append((candidate, notice))
         session.commit()
         candidates.sort(key=lambda item: _candidate_ai_order_key((item[0], True, "")))
+        retry_candidates: list[tuple[NoticeCandidate, Notice]] = []
         for candidate, notice in candidates[:max_count]:
+            payload = evaluate_notice_relevance(session, settings, notice, candidate)
+            if payload is not None:
+                evaluated += 1
+            if _ai_evaluation_needs_retry(payload):
+                retry_candidates.append((candidate, notice))
+        # First attempts complete for all candidates before failed ones retry.
+        for candidate, notice in retry_candidates:
             payload = evaluate_notice_relevance(session, settings, notice, candidate)
             if payload is not None:
                 evaluated += 1
@@ -1384,7 +1410,7 @@ def _latest_unposted_ai_items(session, settings) -> tuple[list[AiEvaluatedItem],
                 payload=payload,
             )
         )
-        if evaluation is not None and evaluation.status == "done":
+        if evaluation is not None:
             posted_evaluation_ids.append(evaluation.id)
     session.commit()
     return items, posted_evaluation_ids
@@ -1483,7 +1509,7 @@ def _format_ai_recommendation_result(
         )
     lines = [
         header,
-        "AI \ud3c9\uac00: %s\uac74 / \ucd94\ucc9c: %s\uac74 / \ubbf8\uc644\ub8cc: %s\uac74"
+        "AI \ud3c9\uac00: %s\uac74 / \ucd94\ucc9c: %s\uac74 / \uc624\ub958: %s\uac74"
         % (len(items), len(recommendations), len(failures)),
     ]
     if not items:
@@ -1518,13 +1544,12 @@ def _format_ai_recommendation_result(
             ]
         )
     if failures:
-        lines.extend(
-            [
-                "",
-                "\ucc38\uace0: AI \ud3c9\uac00 \ubbf8\uc644\ub8cc %s\uac74\uc740 \ub2e4\uc74c \uac8c\uc2dc \uc8fc\uae30\uc5d0 \ub2e4\uc2dc \ud3c9\uac00/\uac8c\uc2dc\ud569\ub2c8\ub2e4."
-                % len(failures),
-            ]
-        )
+        lines.extend(["", "AI \ud3c9\uac00 \uc624\ub958 (%s\uac74)" % len(failures)])
+        for item in failures:
+            reason = (item.payload or {}).get("failure_reason") or "\uc751\ub2f5 \uc5c6\uc74c"
+            lines.append(
+                "- %s: %s" % (item.candidate.title, _clip_slack_text(str(reason), 220))
+            )
     return "\n".join(lines)
 
 
