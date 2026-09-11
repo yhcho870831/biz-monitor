@@ -153,7 +153,7 @@ class BusinessScopeFilterTest(unittest.TestCase):
             source_url="https://example.com",
         )
 
-        self.assertEqual(excluded_scope_reason(candidate), "\ub0b4\uc218\uba74")
+        self.assertEqual(excluded_scope_reason(candidate), "ssr기반")
         self.assertTrue(is_excluded_business_notice(candidate))
 
     def test_salvage_lift_notice_is_filtered(self) -> None:

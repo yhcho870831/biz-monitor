@@ -28,7 +28,6 @@ DEFAULT_EXCLUDED_SCOPE_KEYWORDS = (
     "\uc218\uc0b0\uc885\uc790",
     "\ub9e4\uc785\ubc29\ub958",
     "\uaf43\uac8c",
-    "\ub0b4\uc218\uba74",
     "ssr\uae30\ubc18",
     "\ud2b9\uc774 \ub9c8\ucee4",
     "\uc778\uc591\uae30",
@@ -60,11 +59,10 @@ def excluded_scope_keywords() -> tuple[str, ...]:
 
 
 def _candidate_scope_text(candidate: NoticeCandidate) -> str:
-    values = [candidate.title or ""]
-    for value in (candidate.raw_payload or {}).values():
-        if isinstance(value, (str, int, float)):
-            values.append(str(value))
-    return normalize_text(" ".join(values)).lower()
+    """Return only the human-visible procurement title for scope exclusion."""
+    # Raw collector payloads carry metadata such as organization and category.
+    # That metadata must never decide whether an otherwise relevant business notice is excluded.
+    return normalize_text(candidate.title or "").lower()
 
 
 def excluded_scope_reason(candidate: NoticeCandidate, settings=None) -> str | None:
