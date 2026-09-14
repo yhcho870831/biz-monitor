@@ -223,5 +223,28 @@ class BusinessScopeFilterTest(unittest.TestCase):
         self.assertTrue(is_excluded_business_notice(candidate))
 
 
+    def test_fishing_vessel_repair_notice_is_filtered(self) -> None:
+        candidate = NoticeCandidate(
+            site_code="g2b",
+            site_notice_key="repair-1",
+            title="국가어업지도선(무궁화12호) 정기수리용역(선체·기관)",
+            source_url="https://example.com",
+        )
+
+        self.assertEqual(excluded_scope_reason(candidate), "어업지도선+수리")
+        self.assertTrue(is_excluded_business_notice(candidate))
+
+    def test_fishing_vessel_system_notice_is_not_filtered(self) -> None:
+        candidate = NoticeCandidate(
+            site_code="g2b",
+            site_notice_key="system-1",
+            title="어선안전조업관리시스템 기능개선 및 DR 센터 구축",
+            source_url="https://example.com",
+        )
+
+        self.assertIsNone(excluded_scope_reason(candidate))
+        self.assertFalse(is_excluded_business_notice(candidate))
+
+
 if __name__ == "__main__":
     unittest.main()

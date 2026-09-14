@@ -37,6 +37,12 @@ DEFAULT_EXCLUDED_SCOPE_KEYWORDS = (
 )
 
 
+DEFAULT_EXCLUDED_SCOPE_TERM_GROUPS = (
+    ("어선", "수리"),
+    ("어업지도선", "수리"),
+)
+
+
 def excluded_scope_keywords() -> tuple[str, ...]:
     custom_terms = tuple(
         normalized
@@ -73,8 +79,10 @@ def excluded_scope_reason(candidate: NoticeCandidate, settings=None) -> str | No
     for keyword in excluded_scope_keywords():
         if keyword in text:
             return keyword
+    for terms in DEFAULT_EXCLUDED_SCOPE_TERM_GROUPS:
+        if all(term in text for term in terms):
+            return "+".join(terms)
     return None
-
 
 def is_excluded_business_notice(candidate: NoticeCandidate, settings=None) -> bool:
     return excluded_scope_reason(candidate, settings=settings) is not None
