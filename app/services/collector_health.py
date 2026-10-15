@@ -24,7 +24,7 @@ from typing import Iterable, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Job
+from app.models import Job, NoticeAiEvaluation
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,16 @@ class SiteHealth:
     success_count: int = 0
     failed_count: int = 0
     last_success_at: datetime | None = None
+    sample_error: str = ""
+    flagged: bool = False
+    reasons: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AiHealth:
+    done_count: int = 0
+    failed_count: int = 0
+    last_done_at: datetime | None = None
     sample_error: str = ""
     flagged: bool = False
     reasons: list[str] = field(default_factory=list)
@@ -151,6 +161,74 @@ def _fmt_dt(value: datetime | None) -> str:
     return value.strftime("%Y-%m-%d %H:%M") + " UTC"
 
 
+def evaluate_ai_health(
+    window_rows: Iterable[tuple[str, str | None]],
+    last_done_at: datetime | None,
+    min_failed: int = 2,
+) -> AiHealth:
+    """Flag an AI outage: evaluations were attempted in the window but none succeeded.
+
+    ``window_rows`` items are ``(status, failure_reason)`` for evaluations updated
+    inside the window. A window with no evaluations is normal (no candidates) and
+    is never flagged; ``min_failed`` keeps a single transient failure quiet.
+    """
+    health = AiHealth(last_done_at=last_done_at)
+    for status, failure_reason in window_rows:
+        if status == "done":
+            health.done_count += 1
+        elif status == "failed":
+            health.failed_count += 1
+            if not health.sample_error and failure_reason:
+                health.sample_error = _first_line(failure_reason)
+    if health.done_count == 0 and health.failed_count >= max(1, min_failed):
+        health.flagged = True
+        health.reasons.append(f"평가 {health.failed_count}건 전부 실패(성공 0건)")
+    return health
+
+
+def load_ai_window_rows(session: Session, cutoff: datetime) -> list[tuple[str, str | None]]:
+    stmt = select(NoticeAiEvaluation.status, NoticeAiEvaluation.failure_reason).where(
+        NoticeAiEvaluation.updated_at >= cutoff
+    )
+    return [(row[0], row[1]) for row in session.execute(stmt).all()]
+
+
+def load_ai_last_done(session: Session) -> datetime | None:
+    return session.execute(
+        select(func.max(NoticeAiEvaluation.updated_at)).where(
+            NoticeAiEvaluation.status == "done"
+        )
+    ).scalar()
+
+
+def build_ai_report(
+    session: Session,
+    settings,
+    window_hours: int,
+    now_utc: datetime | None = None,
+) -> AiHealth:
+    cutoff = (now_utc or datetime.utcnow()) - timedelta(hours=window_hours)
+    return evaluate_ai_health(
+        load_ai_window_rows(session, cutoff),
+        load_ai_last_done(session),
+        min_failed=int(getattr(settings, "ai_health_min_failed", 2)),
+    )
+
+
+def format_ai_alert(health: AiHealth, window_hours: int, now: datetime | None = None) -> str:
+    stamp = (now or datetime.utcnow()).strftime("%Y-%m-%d %H:%M")
+    reason = ", ".join(health.reasons) if health.reasons else "이상 감지"
+    lines = [
+        f":rotating_light: *AI 평가 장애 의심* (최근 {window_hours}시간 기준, {stamp} UTC)",
+        "• %s | 성공 %d · 실패 %d | 마지막 성공: %s"
+        % (reason, health.done_count, health.failed_count, _fmt_dt(health.last_done_at)),
+    ]
+    if health.sample_error:
+        lines.append(f"    ↳ 최근 오류: {health.sample_error}")
+    lines.append("    ↳ 게이트웨이 /healthz는 정상이어도 모델 호출은 실패할 수 있습니다. 모델·인증 설정을 확인하세요.")
+    return "\n".join(lines)
+
+
 def format_health_alert(
     unhealthy: Sequence[SiteHealth],
     window_hours: int,
@@ -232,13 +310,34 @@ def run_collector_health_check(
             now_utc=now_utc,
         )
 
+    ai_health: AiHealth | None = None
+    if getattr(settings, "ai_health_enabled", True):
+        try:
+            with session_factory() as session:
+                ai_health = build_ai_report(
+                    session, settings, effective_window, now_utc=now_utc
+                )
+        except Exception:
+            # An AI-monitor failure must never block the collector alert.
+            logger.exception("ai health evaluation failed")
+
     unhealthy = [health for health in report.values() if health.flagged]
+    ai_flagged = bool(ai_health and ai_health.flagged)
     summary = {
         "enabled": True,
         "window_hours": effective_window,
         "monitored": sorted(report.keys()),
         "unhealthy": [health.site_code for health in unhealthy],
+        "ai_unhealthy": ai_flagged,
     }
+    if ai_health is not None:
+        logger.info(
+            "ai-health done=%d failed=%d flagged=%s last_done=%s",
+            ai_health.done_count,
+            ai_health.failed_count,
+            ai_flagged,
+            _fmt_dt(ai_health.last_done_at),
+        )
 
     for code in sorted(report.keys()):
         health = report[code]
@@ -251,9 +350,9 @@ def run_collector_health_check(
             _fmt_dt(health.last_success_at),
         )
 
-    should_send = bool(unhealthy) or force
+    should_send = bool(unhealthy) or ai_flagged or force
     if dry_run or not should_send:
-        if not unhealthy:
+        if not unhealthy and not ai_flagged:
             logger.info("collector-health OK, no alert sent")
         summary["sent"] = False
         return summary
@@ -268,16 +367,25 @@ def run_collector_health_check(
         summary["sent"] = False
         return summary
 
-    message = format_health_alert(
-        unhealthy or list(report.values()),
-        effective_window,
-        now=now_utc,
-    )
+    parts = []
+    if unhealthy or force or not ai_flagged:
+        parts.append(
+            format_health_alert(
+                unhealthy or list(report.values()),
+                effective_window,
+                now=now_utc,
+            )
+        )
+    if ai_flagged:
+        parts.append(format_ai_alert(ai_health, effective_window, now=now_utc))
+    message = "\n\n".join(parts)
     try:
         ts = notifier.send_text(channel_id, message)
         summary["sent"] = True
         summary["message_ts"] = ts
-        logger.info("collector-health alert sent sites=%s", summary["unhealthy"])
+        logger.info(
+            "collector-health alert sent sites=%s ai=%s", summary["unhealthy"], ai_flagged
+        )
     except Exception:
         logger.exception("collector-health alert send failed")
         summary["sent"] = False

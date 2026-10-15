@@ -8,8 +8,11 @@ from unittest.mock import MagicMock, patch
 
 from app.services import collector_health as ch
 from app.services.collector_health import (
+    AiHealth,
     SiteHealth,
+    evaluate_ai_health,
     evaluate_health,
+    format_ai_alert,
     format_health_alert,
     resolve_monitored_sites,
     run_collector_health_check,
@@ -166,6 +169,97 @@ class RunCheckPolicyTest(unittest.TestCase):
         )
         notifier.send_text.assert_not_called()
         self.assertFalse(summary["enabled"])
+
+
+class EvaluateAiHealthTest(unittest.TestCase):
+    def test_no_evaluations_is_normal(self):
+        self.assertFalse(evaluate_ai_health([], None).flagged)
+
+    def test_all_failed_is_flagged_with_sample_error(self):
+        rows = [("failed", "gateway_http_500: 410 status code (no body)")] * 3
+        health = evaluate_ai_health(rows, None)
+        self.assertTrue(health.flagged)
+        self.assertEqual(health.failed_count, 3)
+        self.assertIn("410", health.sample_error)
+
+    def test_any_success_clears_the_flag(self):
+        rows = [("failed", "x"), ("failed", "x"), ("done", None)]
+        self.assertFalse(evaluate_ai_health(rows, None).flagged)
+
+    def test_single_failure_stays_quiet_until_threshold(self):
+        self.assertFalse(evaluate_ai_health([("failed", "x")], None).flagged)
+        self.assertTrue(evaluate_ai_health([("failed", "x")], None, min_failed=1).flagged)
+
+    def test_alert_text_mentions_outage_and_last_success(self):
+        text = format_ai_alert(
+            AiHealth(failed_count=4, flagged=True, reasons=["평가 4건 전부 실패(성공 0건)"],
+                     sample_error="410"),
+            24,
+            now=datetime(2026, 10, 15, 0, 0),
+        )
+        self.assertIn("AI 평가 장애 의심", text)
+        self.assertIn("실패 4", text)
+        self.assertIn("410", text)
+
+
+class RunCheckAiPolicyTest(unittest.TestCase):
+    @contextmanager
+    def _fake_factory(self):
+        yield MagicMock()
+
+    def _run(self, ai_health=None, ai_error=False, report=None, **kwargs):
+        report = report if report is not None else {
+            "d2b": SiteHealth("d2b", success_count=3, flagged=False)
+        }
+        notifier = MagicMock()
+        notifier.send_text.return_value = "1.2"
+        ai_patch = (
+            patch.object(ch, "build_ai_report", side_effect=RuntimeError("db"))
+            if ai_error
+            else patch.object(ch, "build_ai_report", return_value=ai_health)
+        )
+        with patch.object(ch, "build_report", return_value=report), ai_patch:
+            summary = run_collector_health_check(
+                self._fake_factory, notifier, _settings(), **kwargs
+            )
+        return summary, notifier
+
+    def test_ai_outage_alerts_even_when_collectors_are_healthy(self):
+        ai = AiHealth(failed_count=5, flagged=True, reasons=["평가 5건 전부 실패(성공 0건)"])
+        summary, notifier = self._run(ai_health=ai)
+        notifier.send_text.assert_called_once()
+        message = notifier.send_text.call_args[0][1]
+        self.assertIn("AI 평가 장애 의심", message)
+        self.assertNotIn("수집기 안정성 경고", message)
+        self.assertTrue(summary["sent"])
+        self.assertTrue(summary["ai_unhealthy"])
+
+    def test_both_problems_are_sent_in_one_message(self):
+        ai = AiHealth(failed_count=5, flagged=True, reasons=["x"])
+        report = {"iris": SiteHealth("iris", failed_count=2, flagged=True, reasons=["실패 2건"])}
+        summary, notifier = self._run(ai_health=ai, report=report)
+        notifier.send_text.assert_called_once()
+        message = notifier.send_text.call_args[0][1]
+        self.assertIn("수집기 안정성 경고", message)
+        self.assertIn("AI 평가 장애 의심", message)
+
+    def test_healthy_ai_sends_nothing(self):
+        summary, notifier = self._run(ai_health=AiHealth(done_count=4))
+        notifier.send_text.assert_not_called()
+        self.assertFalse(summary["ai_unhealthy"])
+
+    def test_ai_check_failure_does_not_block_collector_alert(self):
+        report = {"iris": SiteHealth("iris", failed_count=2, flagged=True, reasons=["실패 2건"])}
+        summary, notifier = self._run(ai_error=True, report=report)
+        notifier.send_text.assert_called_once()
+        self.assertIn("수집기 안정성 경고", notifier.send_text.call_args[0][1])
+        self.assertFalse(summary["ai_unhealthy"])
+
+    def test_dry_run_with_ai_outage_never_sends(self):
+        ai = AiHealth(failed_count=5, flagged=True, reasons=["x"])
+        summary, notifier = self._run(ai_health=ai, dry_run=True)
+        notifier.send_text.assert_not_called()
+        self.assertFalse(summary["sent"])
 
 
 if __name__ == "__main__":
