@@ -417,6 +417,15 @@ def _times_before(times: list[str], minutes: int) -> list[str]:
     return result
 
 
+def _catchup_publish_times(publish_times: list[str], offsets_minutes: list[int]) -> list[str]:
+    """Extra publish slots after each regular one, for results that finish late."""
+    result: list[str] = []
+    for offset in offsets_minutes:
+        if offset > 0:
+            result.extend(_times_before(publish_times, -offset))
+    return sorted(set(result))
+
+
 def command_run_ai_loop() -> None:
     """Evaluate queued notices continuously, independent of the publish loop.
 
@@ -514,6 +523,35 @@ def command_run_scheduler_loop() -> None:
                     )
                 except Exception:
                     logger.exception("deferred publish failed for %s", publish_mark)
+
+        if getattr(settings, "slack_deferred_publish_enabled", False):
+            # Collection, retries and AI can finish after the regular slot.
+            # Re-running the (idempotent) publish picks up whatever is still
+            # pending, so late results do not wait for the next day's slot.
+            catchup_mark = _due_scheduler_mark(
+                now,
+                _catchup_publish_times(
+                    settings.slack_publish_times,
+                    getattr(settings, "slack_catchup_publish_offsets_minutes", []),
+                ),
+                _load_scheduler_mark("publish-catchup"),
+            )
+            if catchup_mark:
+                logger.info("catch-up publishing deferred notices for %s", catchup_mark)
+                try:
+                    stats = publish_deferred_scheduled_notices(
+                        session_factory,
+                        notifier,
+                        settings,
+                    )
+                    _save_scheduler_mark(catchup_mark, "publish-catchup")
+                    logger.info(
+                        "catch-up published deferred notices for %s shared=%s",
+                        catchup_mark,
+                        stats.total_shared,
+                    )
+                except Exception:
+                    logger.exception("catch-up publish failed for %s", catchup_mark)
 
         if getattr(settings, "collector_health_enabled", True):
             health_mark = _due_scheduler_mark(
