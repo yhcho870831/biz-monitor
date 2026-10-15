@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 from xml.etree import ElementTree as ET
 
-from app.collectors.base import BaseCollector
+from app.collectors.base import BaseCollector, PartialSearchError
 from app.collectors.playwright_utils import browser_page
 from app.types import NoticeCandidate
 from app.utils import extract_datetimes, make_period_text, normalize_text
@@ -31,6 +33,13 @@ G2B_ACTION_TIMEOUT_MS = 45000
 G2B_DOWNLOAD_TIMEOUT_MS = 20000
 G2B_BINDING_WAIT_TIMEOUT_MS = 15000
 G2B_BINDING_RETRY_COUNT = 2
+# The GNB menu is rendered some seconds after DOMContentLoaded (3.6-12.8s measured).
+G2B_MENU_WAIT_TIMEOUT_MS = 30000
+# Whole-browser attempts per stage; a fresh browser recovers a stuck home screen.
+G2B_BROWSER_ATTEMPTS = 2
+G2B_BROWSER_RETRY_PAUSE_SECONDS = 2
+
+logger = logging.getLogger(__name__)
 
 
 class G2BCollector(BaseCollector):
@@ -38,17 +47,56 @@ class G2BCollector(BaseCollector):
     list_url = "https://www.g2b.go.kr/"
 
     def search(self, term: str) -> List[NoticeCandidate]:
+        # Each stage is independent: a failure in one must not discard the other's
+        # results, nor stop the other from running.
         results: list[NoticeCandidate] = []
-        results.extend(self._search_bid_notices(term))
-        results.extend(self._search_pre_announcements(term))
+        failures: dict[str, Exception] = {}
+        for stage, run in (
+            ("bid", self._search_bid_notices),
+            ("pre_specification", self._search_pre_announcements),
+        ):
+            try:
+                results.extend(run(term))
+            except Exception as exc:
+                logger.warning("g2b %s stage failed term=%s: %s", stage, term, exc)
+                failures[stage] = exc
 
         deduped: dict[str, NoticeCandidate] = {}
         for candidate in results:
             deduped.setdefault(candidate.site_notice_key, candidate)
-        return list(deduped.values())
+        candidates = list(deduped.values())
+
+        if failures:
+            if len(failures) == 2:
+                # Nothing succeeded: surface the first error as an ordinary failure.
+                raise next(iter(failures.values()))
+            raise PartialSearchError(candidates, failures)
+        return candidates
+
+    def _with_fresh_browser(self, label: str, action):
+        """Run a whole browser session, retrying once with a new browser."""
+        last_error: Exception | None = None
+        for attempt in range(1, G2B_BROWSER_ATTEMPTS + 1):
+            try:
+                return action()
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "g2b %s browser attempt %d/%d failed: %s",
+                    label,
+                    attempt,
+                    G2B_BROWSER_ATTEMPTS,
+                    str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
+                )
+                if attempt < G2B_BROWSER_ATTEMPTS:
+                    time.sleep(G2B_BROWSER_RETRY_PAUSE_SECONDS)
+        assert last_error is not None
+        raise last_error
 
     def _search_bid_notices(self, term: str) -> List[NoticeCandidate]:
-        download_path = self._download_bid_excel(term)
+        download_path = self._with_fresh_browser(
+            "bid", lambda: self._download_bid_excel(term)
+        )
         if download_path is None:
             return []
         try:
@@ -90,7 +138,9 @@ class G2BCollector(BaseCollector):
         return results
 
     def _search_pre_announcements(self, term: str) -> List[NoticeCandidate]:
-        rows = self._fetch_pre_announcement_rows(term)
+        rows = self._with_fresh_browser(
+            "pre_specification", lambda: self._fetch_pre_announcement_rows(term)
+        )
         if not rows:
             return []
 
@@ -139,7 +189,7 @@ class G2BCollector(BaseCollector):
     def _download_bid_excel(self, term: str) -> Path | None:
         with browser_page(accept_downloads=True) as page:
             page.goto(self.list_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(1000)
 
             self._close_home_popup(page)
             self._open_bid_notice_menu(page)
@@ -197,7 +247,7 @@ class G2BCollector(BaseCollector):
     def _fetch_pre_announcement_rows(self, term: str) -> List[Dict[str, Any]]:
         with browser_page() as page:
             page.goto(self.list_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(1000)
 
             self._close_home_popup(page)
             self._open_procurement_plan_menu(page)
@@ -308,28 +358,34 @@ class G2BCollector(BaseCollector):
             close_button.first.click(force=True)
             page.wait_for_timeout(800)
 
+    def _click_menu(self, page, menu_id: str, pause_ms: int) -> None:
+        """Wait for a GNB menu element, then click it. Never skip a missing menu."""
+        try:
+            page.wait_for_selector(
+                "#" + menu_id, state="attached", timeout=G2B_MENU_WAIT_TIMEOUT_MS
+            )
+        except Exception as exc:
+            raise RuntimeError("g2b menu element not found: %s" % menu_id) from exc
+        page.evaluate(
+            "(menu_id) => { const el = document.getElementById(menu_id); if (el) el.click(); }",
+            menu_id,
+        )
+        page.wait_for_timeout(pause_ms)
+
     def _open_bid_notice_menu(self, page) -> None:
         for menu_id in [
             "mf_wfm_gnb_wfm_gnbMenu_genMenu1_1_btnMenu1",
             "mf_wfm_gnb_wfm_gnbMenu_genMenu1_1_genMenu2_0_btnMenu2",
             "mf_wfm_gnb_wfm_gnbMenu_genMenu1_1_genMenu2_0_genMenu3_0_btnMenu3",
         ]:
-            page.evaluate(
-                "(menu_id) => { const el = document.getElementById(menu_id); if (el) el.click(); }",
-                menu_id,
-            )
-            page.wait_for_timeout(1000)
+            self._click_menu(page, menu_id, 1000)
 
     def _open_procurement_plan_menu(self, page) -> None:
         for menu_id in [
             "mf_wfm_gnb_wfm_gnbMenu_genMenu1_0_btnMenu1",
             "mf_wfm_gnb_wfm_gnbMenu_genMenu1_0_genMenu2_0_btnMenu2",
         ]:
-            page.evaluate(
-                "(menu_id) => { const el = document.getElementById(menu_id); if (el) el.click(); }",
-                menu_id,
-            )
-            page.wait_for_timeout(1200)
+            self._click_menu(page, menu_id, 1200)
 
     def _parse_bid_excel(self, path: Path) -> List[Dict[str, str]]:
         with zipfile.ZipFile(path) as archive:

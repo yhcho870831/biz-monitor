@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover
     ZoneInfo = None
 
 from app.models import Notice, SlackShare
+from app.collectors.base import PartialSearchError
 from app.repositories.jobs import (
     claim_next_pending_job,
     create_job,
@@ -404,7 +405,21 @@ def process_job(
         mark_job_success(session, job)
         return 0
 
-    candidates = collector.search(job.search_term or job.keyword or "")
+    partial_failure: PartialSearchError | None = None
+    try:
+        candidates = collector.search(job.search_term or job.keyword or "")
+    except PartialSearchError as exc:
+        # Keep what the healthy stages found; the job is failed below so the
+        # failed stage is retried.
+        partial_failure = exc
+        candidates = list(exc.results)
+        logger.warning(
+            "partial search site=%s search_term=%s kept=%s failed_stages=%s",
+            job.site_code,
+            job.search_term,
+            len(candidates),
+            ",".join(exc.failures),
+        )
     search_count = len(candidates)
 
     prepared_candidates: list[tuple[NoticeCandidate, bool, str]] = []
@@ -564,6 +579,8 @@ def process_job(
                 job.site_code,
             )
 
+    if partial_failure is not None:
+        raise partial_failure
     mark_job_success(session, job)
     return search_count
 
