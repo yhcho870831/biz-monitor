@@ -305,7 +305,7 @@ def _parse_gateway_response(gateway_response: dict) -> dict:
         parsed = _extract_json_object(raw_text)
     except Exception:
         parsed = _extract_structured_fields_from_text(raw_text)
-    fit_score = max(0, min(100, int(parsed.get("fit_score") or 0)))
+    fit_score = _require_fit_score(parsed.get("fit_score"))
     fit_level = str(parsed.get("fit_level") or _fit_level_from_score(fit_score)).lower()
     if fit_level not in {"low", "medium", "high"}:
         fit_level = _fit_level_from_score(fit_score)
@@ -327,13 +327,28 @@ def _parse_gateway_response(gateway_response: dict) -> dict:
     }
 
 
+def _require_fit_score(value: Any) -> int:
+    """A missing or non-numeric fit_score is a failed evaluation, never a 0-point result."""
+    if value is None or isinstance(value, bool) or value == "":
+        raise RuntimeError("AI relevance response has no fit_score")
+    try:
+        score = int(float(value))
+    except (TypeError, ValueError):
+        raise RuntimeError("AI relevance response has an invalid fit_score") from None
+    if not 0 <= score <= 100:
+        raise RuntimeError("AI relevance response has an out-of-range fit_score")
+    return score
+
+
 def _extract_structured_fields_from_text(text: str) -> dict:
     normalized = normalize_text(text)
     if not normalized:
         raise RuntimeError("AI relevance response is empty")
 
     fit_score_match = re.search(r"fit[_ ]?score[^0-9]{0,20}(\d{1,3})", normalized, flags=re.IGNORECASE)
-    fit_score = int(fit_score_match.group(1)) if fit_score_match else 0
+    if fit_score_match is None:
+        raise RuntimeError("AI relevance response has no fit_score")
+    fit_score = int(fit_score_match.group(1))
 
     fit_level_match = re.search(r"\b(high|medium|low)\b", normalized, flags=re.IGNORECASE)
     fit_level = fit_level_match.group(1).lower() if fit_level_match else _fit_level_from_score(fit_score)
