@@ -1273,6 +1273,26 @@ def _ai_evaluation_needs_retry(payload: dict | None) -> bool:
     return not payload or payload.get("status") != "done"
 
 
+def _ai_failure_is_terminal(evaluation, settings) -> bool:
+    """A failed evaluation is final once retries have spanned the retry window."""
+    if getattr(evaluation, "status", None) == "done":
+        return False
+    created_at = getattr(evaluation, "created_at", None)
+    updated_at = getattr(evaluation, "updated_at", None)
+    if created_at is None or updated_at is None:
+        return False
+    window_hours = int(getattr(settings, "ai_relevance_retry_window_hours", 6) or 0)
+    return updated_at - created_at >= timedelta(hours=window_hours)
+
+
+def _ai_failure_in_cooldown(evaluation, settings) -> bool:
+    updated_at = getattr(evaluation, "updated_at", None)
+    if updated_at is None:
+        return False
+    cooldown = int(getattr(settings, "ai_relevance_retry_cooldown_minutes", 30) or 0)
+    return datetime.utcnow() - updated_at < timedelta(minutes=cooldown)
+
+
 def publish_deferred_scheduled_notices(
     session_factory,
     notifier: SlackNotifier,
@@ -1330,8 +1350,13 @@ def prepare_deferred_ai_evaluations(
     settings,
     *,
     limit: int | None = None,
+    retry_immediately: bool = True,
 ) -> int:
-    """Evaluate AI relevance for queued or previously incomplete posted notices."""
+    """Evaluate AI relevance for queued or previously incomplete posted notices.
+
+    The continuous AI loop passes ``retry_immediately=False`` so a failed call is
+    retried only after the cooldown instead of hammering a slow gateway.
+    """
 
     if not ai_relevance_enabled(settings):
         return 0
@@ -1362,6 +1387,11 @@ def prepare_deferred_ai_evaluations(
                 or latest.ai_recommendation_posted_at is not None
             ):
                 continue
+            if latest is not None and (
+                _ai_failure_is_terminal(latest, settings)
+                or _ai_failure_in_cooldown(latest, settings)
+            ):
+                continue
             candidate = _notice_candidate_from_notice(notice)
             if not is_active_notice(candidate, now_kst()):
                 suppress_share(session, share, "inactive_before_ai_evaluation", commit=False)
@@ -1381,7 +1411,7 @@ def prepare_deferred_ai_evaluations(
             payload = evaluate_notice_relevance(session, settings, notice, candidate)
             if payload is not None:
                 evaluated += 1
-            if _ai_evaluation_needs_retry(payload):
+            if retry_immediately and _ai_evaluation_needs_retry(payload):
                 retry_candidates.append((candidate, notice))
         # First attempts complete for all candidates before failed ones retry.
         for candidate, notice in retry_candidates:
@@ -1422,6 +1452,13 @@ def _latest_unposted_ai_items(session, settings) -> tuple[list[AiEvaluatedItem],
         if (
             evaluation is not None
             and evaluation.ai_recommendation_posted_at is not None
+        ):
+            continue
+        # AI runs in its own loop, so at publish time an evaluation may be
+        # missing or still inside its retry window. Those are not reported (and
+        # not marked posted) so a later publish picks up the real result.
+        if evaluation is None or (
+            evaluation.status != "done" and not _ai_failure_is_terminal(evaluation, settings)
         ):
             continue
         payload = ai_evaluation_payload(evaluation)

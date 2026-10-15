@@ -63,6 +63,29 @@ services:
       - ./data:/app/data
       - ./output:/app/output
 
+  # AI evaluation loop: evaluates queued notices on its own, so a slow or failing
+  # AI gateway can never delay the 09:00/16:00 Slack publish. Publishing only
+  # reads finished evaluations.
+  biz-monitor-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: biz-monitor-ai
+    env_file:
+      - .env
+      - .env.override
+    environment:
+      SERVICE_NAME: ai
+      LOG_BACKUP_DAYS: 14
+    command: ["/app/docker/run-ai.sh"]
+    restart: unless-stopped
+    init: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+
   # Dedicated g2b worker: g2b is the slowest site (screenshots, attachments),
   # so it gets its own always-on worker and cannot delay the other sites.
   biz-monitor-worker-g2b:

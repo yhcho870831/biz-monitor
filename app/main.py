@@ -417,6 +417,39 @@ def _times_before(times: list[str], minutes: int) -> list[str]:
     return result
 
 
+def command_run_ai_loop() -> None:
+    """Evaluate queued notices continuously, independent of the publish loop.
+
+    Publishing only reads finished evaluations, so a slow or failing AI gateway
+    can no longer delay the 09:00/16:00 Slack posts.
+    """
+    settings, session_factory, _, _ = build_runtime()
+    poll = max(5, int(getattr(settings, "ai_loop_poll_seconds", 60) or 60))
+    logger.info(
+        "ai loop started poll=%ss max_per_pass=%s retry_cooldown=%smin retry_window=%sh",
+        poll,
+        settings.ai_relevance_max_per_run,
+        settings.ai_relevance_retry_cooldown_minutes,
+        settings.ai_relevance_retry_window_hours,
+    )
+    while True:
+        evaluated = 0
+        if settings.scheduler_enabled and getattr(
+            settings, "slack_deferred_publish_enabled", False
+        ):
+            try:
+                evaluated = prepare_deferred_ai_evaluations(
+                    session_factory,
+                    settings,
+                    limit=settings.ai_relevance_max_per_run,
+                    retry_immediately=False,
+                )
+            except Exception:
+                logger.exception("ai loop pass failed")
+        # Keep draining while there is work; idle otherwise.
+        time.sleep(1 if evaluated else poll)
+
+
 def command_run_scheduler_loop() -> None:
     settings, session_factory, notifier, registry = build_runtime()
     site_codes = _scheduler_site_codes_from_env()
@@ -460,32 +493,6 @@ def command_run_scheduler_loop() -> None:
             continue
         last_skip_date = ""
         if getattr(settings, "slack_deferred_publish_enabled", False):
-            prepare_times = _times_before(
-                settings.slack_publish_times,
-                settings.ai_relevance_prepare_minutes_before_publish,
-            )
-            prepare_mark = _due_scheduler_mark(
-                now,
-                prepare_times,
-                _load_scheduler_mark("ai-prepare"),
-            )
-            if prepare_mark:
-                logger.info("preparing deferred AI evaluations for %s", prepare_mark)
-                try:
-                    count = prepare_deferred_ai_evaluations(
-                        session_factory,
-                        settings,
-                        limit=settings.ai_relevance_max_per_run,
-                    )
-                    _save_scheduler_mark(prepare_mark, "ai-prepare")
-                    logger.info(
-                        "prepared deferred AI evaluations for %s count=%s",
-                        prepare_mark,
-                        count,
-                    )
-                except Exception:
-                    logger.exception("deferred AI prepare failed for %s", prepare_mark)
-
             publish_mark = _due_scheduler_mark(
                 now,
                 settings.slack_publish_times,
@@ -776,6 +783,7 @@ def main() -> None:
     subparsers.add_parser("run-scheduled-once")
     subparsers.add_parser("run-full-cycle-once")
     subparsers.add_parser("run-scheduler-loop")
+    subparsers.add_parser("run-ai-loop")
     prepare_ai_parser = subparsers.add_parser("prepare-deferred-ai")
     prepare_ai_parser.add_argument("--limit", type=int, default=0)
     subparsers.add_parser("publish-deferred-notices")
@@ -846,6 +854,8 @@ def main() -> None:
         command_run_full_cycle()
     elif args.command == "run-scheduler-loop":
         command_run_scheduler_loop()
+    elif args.command == "run-ai-loop":
+        command_run_ai_loop()
     elif args.command == "prepare-deferred-ai":
         command_prepare_deferred_ai(limit=args.limit or None)
     elif args.command == "publish-deferred-notices":

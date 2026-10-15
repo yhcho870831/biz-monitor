@@ -70,6 +70,10 @@ class Settings:
     ai_relevance_min_rule_score: int
     ai_relevance_evaluate_rule_failed: bool
     ai_relevance_prepare_minutes_before_publish: int
+    ai_relevance_retry_cooldown_minutes: int
+    ai_relevance_retry_window_hours: int
+    ai_loop_poll_seconds: int
+    slack_catchup_publish_offsets_minutes: List[int]
     enable_deadline_filter_d2b: bool
     site_enabled: Dict[str, bool]
     site_keywords: Dict[str, List[str]]
@@ -189,6 +193,18 @@ def load_settings() -> Settings:
         ai_relevance_prepare_minutes_before_publish=int(
             os.getenv("AI_RELEVANCE_PREPARE_MINUTES_BEFORE_PUBLISH", "10")
         ),
+        ai_relevance_retry_cooldown_minutes=int(
+            os.getenv("AI_RELEVANCE_RETRY_COOLDOWN_MINUTES", "30")
+        ),
+        ai_relevance_retry_window_hours=int(
+            os.getenv("AI_RELEVANCE_RETRY_WINDOW_HOURS", "6")
+        ),
+        ai_loop_poll_seconds=int(os.getenv("AI_LOOP_POLL_SECONDS", "60")),
+        slack_catchup_publish_offsets_minutes=[
+            int(value)
+            for value in os.getenv("SLACK_CATCHUP_PUBLISH_OFFSETS_MINUTES", "30,90").split(",")
+            if value.strip().isdigit()
+        ],
         enable_deadline_filter_d2b=_parse_bool(
             os.getenv("ENABLE_DEADLINE_FILTER_D2B"), True
         ),
