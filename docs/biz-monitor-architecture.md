@@ -34,9 +34,9 @@ Biz Monitor는 여러 공고 사이트를 키워드로 검색하고, 회사와 �
 
 - 공고 목록은 09:00, 16:00에만 Slack에 게시한다.
 - worker는 Slack에 직접 게시하지 않고 DB에 게시 대기 상태만 기록한다.
-- AI 평가는 게시 10분 전 최대 30건만 처리한다.
+- AI 평가는 `biz-monitor-ai`가 게시 시각과 무관하게 계속 처리한다(1회 최대 `AI_RELEVANCE_MAX_PER_RUN`건). 게시는 끝난 결과만 읽는다. 실패한 평가는 `AI_RELEVANCE_RETRY_COOLDOWN_MINUTES`(30분) 뒤 재시도하고 `AI_RELEVANCE_RETRY_WINDOW_HOURS`(6시간)가 지나면 최종 실패로 보고한다.
 - AI 추천 결과는 사이트별로 나누지 않고 1개 Slack 메시지로 합쳐서 게시한다.
-- 게시 시각에 아직 검색/평가가 끝나지 않은 공고는 다음 게시 주기로 넘어간다.
+- 게시 시각에 아직 검색/평가가 끝나지 않은 공고는 추가 게시 시각(정규 게시 +30분, +90분, `SLACK_CATCHUP_PUBLISH_OFFSETS_MINUTES`)에 게시한다. 게시는 중복 없이 재실행할 수 있다.
 - 수동 재실행은 기본적으로 DB만 채우고 Slack에는 올리지 않는 방식으로 운영한다.
 - 주말/공휴일 skip 정책은 유지한다.
 
@@ -48,7 +48,8 @@ Biz Monitor는 여러 공고 사이트를 키워드로 검색하고, 회사와 �
 | --- | --- |
 | `biz-monitor-web` | 웹 UI/API. 첨부 다운로드, 캘린더/저장 공고 화면 제공. 포트 `8080`. |
 | `biz-monitor-slack` | Slack Socket Mode 명령 처리. 수동 검색/명령 응답 담당. |
-| `biz-monitor-scheduler` | 정해진 시각에 job enqueue, AI 준비, Slack 게시를 수행. |
+| `biz-monitor-scheduler` | 정해진 시각에 job enqueue, Slack 게시(정규 + 추가 게시)를 수행. |
+| `biz-monitor-ai` | AI 적합성 평가를 계속 처리. 게시 루프와 분리되어 AI 지연이 게시를 막지 않음. |
 | `biz-monitor-worker-g2b` | 나라장터(g2b) 전용 수집 worker. 느리고 첨부/상세 처리가 많아서 분리. |
 | `biz-monitor-worker-d2b` | 방위사업청(d2b) 전용 수집 worker. |
 | `biz-monitor-worker-research` | `iris,kmiti` 수집 worker. |
