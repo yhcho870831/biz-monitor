@@ -21,6 +21,7 @@ from app.models import Notice, SlackShare
 from app.repositories.jobs import (
     claim_next_pending_job,
     create_job,
+    delete_old_jobs,
     has_retry_job,
     heartbeat_running_jobs,
     mark_job_failed,
@@ -1591,6 +1592,11 @@ def run_scheduled_cycle(
         logger.info("deleted expired notices count=%s", deleted_count)
 
     with session_factory() as session:
+        deleted_jobs = delete_old_jobs(session)
+    if deleted_jobs:
+        logger.info("deleted old jobs count=%s", deleted_jobs)
+
+    with session_factory() as session:
         enqueue_scheduled_jobs(session, settings, site_codes=site_scope)
     _log_job_status_summary(session_factory, "after_enqueue", site_scope)
     stats = run_pending_jobs(
@@ -1648,6 +1654,11 @@ def enqueue_scheduled_cycle(
         deleted_count = delete_expired_notices(session, slack_file_deleter=notifier.delete_file)
     if deleted_count:
         logger.info("deleted expired notices count=%s", deleted_count)
+
+    with session_factory() as session:
+        deleted_jobs = delete_old_jobs(session)
+    if deleted_jobs:
+        logger.info("deleted old jobs count=%s", deleted_jobs)
 
     with session_factory() as session:
         count = enqueue_scheduled_jobs(session, settings, site_codes=site_scope)

@@ -58,6 +58,8 @@ class SchedulerDelegationTest(unittest.TestCase):
         ), patch(
             "app.services.scheduler.delete_expired_notices", return_value=0
         ), patch(
+            "app.services.scheduler.delete_old_jobs", return_value=0
+        ), patch(
             "app.services.scheduler.enqueue_scheduled_jobs"
         ), patch(
             "app.services.scheduler._log_job_status_summary", return_value={}

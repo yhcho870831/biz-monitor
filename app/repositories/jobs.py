@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from app.models import Job
+from app.models import Job, SlackShare
 
 
 def create_job(
@@ -184,3 +184,36 @@ def mark_job_failed(session: Session, job: Job, error_message: str) -> None:
     job.finished_at = datetime.utcnow()
     job.error_message = error_message
     session.commit()
+
+
+DEFAULT_JOB_RETENTION_DAYS = 30
+
+
+def delete_old_jobs(
+    session: Session,
+    now: datetime | None = None,
+    retention_days: int = DEFAULT_JOB_RETENTION_DAYS,
+) -> int:
+    """Delete finished (success/failed) jobs older than the retention window.
+
+    Pending and running jobs are never touched. Share rows keep their history;
+    only their reference to the deleted job is cleared.
+    """
+    cutoff = (now or datetime.utcnow()) - timedelta(days=retention_days)
+    old_ids = list(
+        session.execute(
+            select(Job.id)
+            .where(Job.status.in_(("success", "failed")))
+            .where(Job.created_at < cutoff)
+        ).scalars()
+    )
+    if not old_ids:
+        return 0
+    for start in range(0, len(old_ids), 500):
+        chunk = old_ids[start:start + 500]
+        session.execute(
+            update(SlackShare).where(SlackShare.job_id.in_(chunk)).values(job_id=None)
+        )
+        session.execute(delete(Job).where(Job.id.in_(chunk)))
+    session.commit()
+    return len(old_ids)
