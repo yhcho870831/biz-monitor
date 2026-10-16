@@ -16,6 +16,7 @@ from app.utils import make_period_text, normalize_text, parse_datetime
 
 
 D2B_RETURN_TIMEOUT_MS = 15_000
+D2B_DETAIL_READY_TIMEOUT_MS = 8_000
 MAX_RESULT_PAGES = 10
 
 logger = logging.getLogger(__name__)
@@ -130,19 +131,32 @@ class D2BCollector(BaseCollector):
         link.click()
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(1000)
+        # The detail body is sometimes still empty after networkidle; wait for
+        # a field label instead of scraping a blank page.
+        try:
+            page.get_by_text("개찰일시").first.wait_for(timeout=D2B_DETAIL_READY_TIMEOUT_MS)
+        except Exception:
+            logger.warning("d2b detail body not ready url=%s", page.url)
 
         soup = BeautifulSoup(page.content(), "html.parser")
         title = ""
         for paragraph in soup.select("p"):
             text = normalize_text(paragraph.get_text(" ", strip=True))
-            if text.startswith("[입찰건명]"):
-                title = text.replace("[입찰건명]", "", 1).strip()
+            # Open-negotiation (공개수의) notices headline "[공사명]" instead.
+            for prefix in ("[입찰건명]", "[공사명]"):
+                if text.startswith(prefix):
+                    title = text.replace(prefix, "", 1).strip()
+                    break
+            if title:
                 break
         if not title:
             title = self._field_value(soup, "입찰건명")
 
         register_deadline_text = self._field_value(soup, "입찰참가등록 마감일시")
-        bid_deadline_text = self._field_value(soup, "입찰서제출 마감일시")
+        # Open-negotiation notices call the bid deadline "견적서제출마감일시".
+        bid_deadline_text = self._field_value(soup, "입찰서제출 마감일시") or self._field_value(
+            soup, "견적서제출마감일시"
+        )
         open_at_text = self._field_value(soup, "개찰일시")
 
         detail = {
