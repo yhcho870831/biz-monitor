@@ -16,6 +16,7 @@ from app.utils import make_period_text, normalize_text, parse_datetime
 
 
 D2B_RETURN_TIMEOUT_MS = 15_000
+MAX_RESULT_PAGES = 10
 
 logger = logging.getLogger(__name__)
 
@@ -29,16 +30,14 @@ class D2BCollector(BaseCollector):
 
         with browser_page() as page:
             self._search_page(page, term)
-            rows = self._result_rows(page)
-            row_count = rows.count()
+            targets = self._collect_targets(page, term)
 
-            for index in range(row_count):
+            for page_no, index in targets:
                 self._search_page(page, term)
+                self._goto_result_page(page, page_no)
                 row = self._result_rows(page).nth(index)
                 link = row.locator("a[href='#none;']").first
                 title = normalize_text(link.inner_text())
-                if normalize_text(term) and normalize_text(term) not in title:
-                    continue
 
                 cells = row.locator("td")
                 cell_values = [
@@ -76,13 +75,51 @@ class D2BCollector(BaseCollector):
         return results
 
     def _search_page(self, page, term: str) -> None:
+        # No period preset is clicked: the form's default window is
+        # "bid deadline from today to +2 months", i.e. only notices that are
+        # still open. The old 12-month preset returned the *oldest* 20 of
+        # hundreds of mostly closed notices, so nothing open was ever seen.
         page.goto(self.list_url, wait_until="domcontentloaded")
         page.wait_for_timeout(1500)
-        page.locator("#chgDate3").click()
         page.locator("#anmt_name").fill(normalize_text(term))
         page.locator("#btn_search").click()
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(1500)
+
+    def _collect_targets(self, page, term: str) -> list[tuple[int, int]]:
+        """Return (page_no, row_index) for every result row whose title matches."""
+        normalized_term = normalize_text(term)
+        total = self._total_count(page)
+        first_rows = self._result_rows(page).count()
+        pages = 1
+        if first_rows and total > first_rows:
+            pages = min(MAX_RESULT_PAGES, -(-total // first_rows))
+            if -(-total // first_rows) > MAX_RESULT_PAGES:
+                logger.warning(
+                    "d2b result pages capped term=%s total=%s pages=%s", normalized_term, total, pages
+                )
+        targets: list[tuple[int, int]] = []
+        for page_no in range(1, pages + 1):
+            if page_no > 1:
+                self._goto_result_page(page, page_no)
+            rows = self._result_rows(page)
+            for index in range(rows.count()):
+                title = normalize_text(rows.nth(index).locator("a[href='#none;']").first.inner_text())
+                if normalized_term and normalized_term not in title:
+                    continue
+                targets.append((page_no, index))
+        return targets
+
+    def _total_count(self, page) -> int:
+        match = re.search(r"총\s*([\d,]+)\s*건", page.locator("body").inner_text())
+        return int(match.group(1).replace(",", "")) if match else 0
+
+    def _goto_result_page(self, page, page_no: int) -> None:
+        if page_no <= 1:
+            return
+        page.evaluate("(n) => view.grid.selectPageNo(n)", page_no)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(1000)
 
     def _result_rows(self, page):
         return page.locator("#SBHE_DATAGRID_WHOLE_TABLE_datagrid1 tr").filter(
