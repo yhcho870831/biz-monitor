@@ -7,6 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from app.collectors.base import BaseCollector
+from app.collectors.http_retry import request_with_dns_retry
 from app.collectors.playwright_utils import browser_page
 from app.types import NoticeCandidate
 from app.utils import normalize_text
@@ -69,7 +70,7 @@ class KIMSTCollector(BaseCollector):
 
     def _fetch_html(self, url: str) -> str:
         try:
-            response = requests.get(url, timeout=20)
+            response = request_with_dns_retry("get", url, timeout=20)
             response.raise_for_status()
             return response.text
         except requests.RequestException:

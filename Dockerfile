@@ -15,6 +15,6 @@ COPY seeds /app/seeds
 COPY README.md /app/README.md
 COPY .env.example /app/.env.example
 
-RUN chmod +x /app/docker/run-slack.sh /app/docker/run-scheduler.sh /app/docker/run-web.sh /app/docker/run-worker.sh
+RUN chmod +x /app/docker/run-slack.sh /app/docker/run-scheduler.sh /app/docker/run-web.sh /app/docker/run-worker.sh /app/docker/run-ai.sh
 
 CMD ["python", "-m", "app.main", "show-config"]

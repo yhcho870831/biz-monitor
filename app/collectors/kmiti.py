@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 from typing import List
 
-import requests
 from bs4 import BeautifulSoup
 
 from app.collectors.base import BaseCollector
+from app.collectors.http_retry import request_with_dns_retry
 from app.types import NoticeCandidate
 from app.utils import extract_datetimes, normalize_text, parse_title_deadline
 
@@ -21,7 +21,8 @@ class KMITICollector(BaseCollector):
         return self._parse_results(html)
 
     def _search_page_html(self, term: str) -> str:
-        response = requests.post(
+        response = request_with_dns_retry(
+            "post",
             self.list_url,
             data={
                 "searchCondition": "all",

@@ -3,10 +3,10 @@ from __future__ import annotations
 import re
 from typing import List
 
-import requests
 from bs4 import BeautifulSoup
 
 from app.collectors.base import BaseCollector
+from app.collectors.http_retry import request_with_dns_retry
 from app.collectors.playwright_utils import browser_page
 from app.types import NoticeCandidate
 from app.utils import normalize_text
@@ -88,7 +88,7 @@ class NIACollector(BaseCollector):
         return results
 
     def _fetch_detail(self, detail_url: str) -> dict:
-        response = requests.get(detail_url, timeout=20)
+        response = request_with_dns_retry("get", detail_url, timeout=20)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
 

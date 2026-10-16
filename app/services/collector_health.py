@@ -127,16 +127,38 @@ def load_window_rows(
     cutoff_utc: datetime,
     monitored_sites: Sequence[str],
 ) -> list[tuple[str, str, str]]:
+    """Window rows as ``(site_code, status, error_message)``.
+
+    A failed job whose automatic retry succeeded is recovered, not a failure, so
+    it is left out; otherwise the alert keeps firing for 24h after a transient
+    error (e.g. a DNS blip) that the retry already fixed.
+    """
     stmt = (
-        select(Job.site_code, Job.status, Job.error_message)
+        select(Job)
         .where(Job.site_code.in_(list(monitored_sites)))
         .where(Job.finished_at.is_not(None))
         .where(Job.finished_at >= cutoff_utc)
     )
-    return [
-        (str(site_code), str(status), error_message or "")
-        for site_code, status, error_message in session.execute(stmt).all()
-    ]
+    rows: list[tuple[str, str, str]] = []
+    for job in session.execute(stmt).scalars().all():
+        if job.status == "failed" and _retry_succeeded(session, job):
+            continue
+        rows.append((str(job.site_code), str(job.status), job.error_message or ""))
+    return rows
+
+
+def _retry_succeeded(session: Session, failed_job: Job) -> bool:
+    stmt = (
+        select(Job.id)
+        .where(Job.job_type == "retry")
+        .where(Job.status == "success")
+        .where(Job.site_code == failed_job.site_code)
+        .where(Job.search_term == failed_job.search_term)
+        .where(Job.attempt == failed_job.attempt + 1)
+        .where(Job.created_at >= failed_job.created_at)
+        .limit(1)
+    )
+    return session.execute(stmt).first() is not None
 
 
 def load_last_success_map(
